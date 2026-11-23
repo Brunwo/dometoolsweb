@@ -5,12 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Solar</title>
     <link rel="icon" href="data:," />
-    <style>html,body{background:#07080d;height:100%;margin:0;overflow:hidden}#view,#view canvas{width:100%;height:100%;display:block;position:fixed;inset:0}#veil{opacity:0;pointer-events:none;background:#05060a;transition:opacity .55s ease-out;position:fixed;inset:0}#veil.on{opacity:1;transition:none}#marker{pointer-events:none;opacity:0;width:0;height:0;transition:opacity .3s;position:fixed;top:0;left:0}#marker.shown{opacity:.85}#marker:before{content:"";border:1.5px solid #f1e9d6;border-radius:50%;width:16px;height:16px;position:absolute;top:-9px;left:-9px;box-shadow:0 0 5px #000000b3}#marker:after{content:"";background:#f1e9d6;border-radius:50%;width:3px;height:3px;position:absolute;top:-1.5px;left:-1.5px}#marker.back:before{border-color:#e0a070;border-radius:0;width:12px;height:12px;top:-7px;left:-7px;transform:rotate(45deg)}#marker.back:after{background:#e0a070}body.dome #marker{display:none}</style>
-    <script type="module" crossorigin src="./assets/index-s5344yxz.js"></script>
+    <style>
+      html, body { margin: 0; height: 100%; background: #07080d; overflow: hidden; }
+      #view, #view canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+      /* which way it is going: a ring ahead, a cross when that way is behind */
+      /* getting into the ship and out of it: a blink */
+      #veil { position: fixed; inset: 0; background: #05060a; opacity: 0; pointer-events: none; transition: opacity 0.55s ease-out; }
+      #veil.on { opacity: 1; transition: none; }
+      #marker { position: fixed; left: 0; top: 0; width: 0; height: 0; pointer-events: none; opacity: 0; transition: opacity 0.3s; }
+      #marker.shown { opacity: 0.85; }
+      #marker::before { content: ''; position: absolute; left: -9px; top: -9px; width: 16px; height: 16px; border: 1.5px solid #f1e9d6; border-radius: 50%; box-shadow: 0 0 5px rgba(0, 0, 0, 0.7); }
+      #marker::after { content: ''; position: absolute; left: -1.5px; top: -1.5px; width: 3px; height: 3px; background: #f1e9d6; border-radius: 50%; }
+      #marker.back::before { border-radius: 0; border-color: #e0a070; transform: rotate(45deg); width: 12px; height: 12px; left: -7px; top: -7px; }
+      #marker.back::after { background: #e0a070; }
+      /* (in the dome the marker's place on a flat picture means nothing) */
+      body.dome #marker { display: none; }
+    </style>
+    <script type="importmap">
+      { "imports": {
+          "three": "./vendor/three/build/three.module.js",
+          "three/addons/": "./vendor/three/examples/jsm/",
+          "three/examples/jsm/": "./vendor/three/examples/jsm/"
+      } }
+    </script>
   </head>
   <body>
     <div id="view"></div>
     <div id="veil"></div>
     <div id="marker"></div>
+    <script type="module" src="./src/main.js"></script>
   </body>
 </html>

@@ -83,4 +83,10 @@ Speed at 1024², 180°: the cubemap path takes ~150 ms for 5 faces × 896². The
 
 ## Demo: Solar in fulldome
 
-`solar/` is a build of [blendi/solar](https://patch.gg/play/blendi/solar) (MIT; music by Kevin MacLeod, CC BY 4.0, credited in its menu and in `solar/CREDITS.md`) with a `?dome` mode that renders the game as a live dome master, using the same cubemap → equidistant fisheye method as this page. Open `solar/?dome`, or `solar/?dome=30` for a dome tilted 30°.
+`solar/` is [blendi/solar](https://patch.gg/play/blendi/solar) (MIT; music by Kevin MacLeod, CC BY 4.0, credited in its menu and in `solar/CREDITS.md`) with a dome mode in both pipelines:
+
+- `solar/?dome`: single-view warp. Every material's vertex shader is wrapped (`solar/src/domewarp.js`), and the ship's long panels are split finer for it (`solar/src/tess.js`). About ×2.4 faster than the cubemap.
+- `solar/?dome&domepipe=cube`: cubemap, 5 faces at 180°.
+- `solar/validate.html`: the same held frame drawn both ways and diffed. 31.9 dB at the start, 29.4 dB in the cockpit; the cubemap against itself is 57–60 dB.
+
+It's published unbundled: ES modules with an import map for three.js r186 (`solar/vendor/three`, MIT). Details: `solar/README-solar.md`.

@@ -1,0 +1,72 @@
+{
+  "size": 2048,
+  "label": [192, 56, 6],
+  "labels": [
+    "RAMP", "GROUND", "LOCKED", "MATCH", "TOO FAST", "BELOW",
+    "AHEAD", "CHART", "SPEED", "HEIGHT", "CLIMB", "CLOCK",
+    "HEAT", "AIR", "PULL", "LEAN", "LAMPS", "PUMP",
+    "STOVE", "SPARE", "LIFT", "PUSH", "TURN", "WIRELESS",
+    "MAIN", "AUX", "WATER", "FUSES", "MIND YOUR HEAD", "WIPE YOUR FEET",
+    "PULL TO SEAL", "No. 1", "No. 2", "No. 3", "No. 4", "V  VIEW",
+    "R  LOCK", "X  MATCH", "SPACE", "SHIFT", "W", "S",
+    "AIR  12", "OIL", "TOOLS", "CHARTS", "TEA", "BISCUITS"
+  ],
+  "labels_cockpit": [
+    "LANDING", "TRIM", "PRIME", "FIRE", "SPARES", "RATIONS",
+    "PILOT", "FEED", "VENT", "HORN", "DYNAMO", "FANS",
+    "HEATER", "SCOPE", "BELL", "LOG", "DO NOT KICK", "ODDS",
+    "SPEAK", "KEY", "DIM", "BRIGHT", "FUEL", "SPARKS",
+    "JETS"
+  ],
+  "labels_room": [
+    "NO AIR", "SUIT UP", "SPARES", "FLOUR", "SALT", "COFFEE",
+    "JAM", "PICKLES", "NAILS", "RATIONS", "THIS WAY UP", "LAMP OIL",
+    "MOON DUST", "SEEDS", "ROPE", "LOG", "ASH", "HONEY",
+    "SOAP", "MATCHES"
+  ],
+  "labels_out": [
+    "FUEL", "MIND THE JETS", "RING", "VENT", "STORES",
+    "GAS", "RAIN"
+  ],
+  "cells": {
+    "chart_wall": [1152, 0, 512, 384],
+    "checklist": [1664, 0, 384, 512],
+    "chart_table": [1152, 384, 512, 384],
+    "pilot_card": [1664, 512, 384, 256],
+    "postcard_a": [1152, 768, 256, 192],
+    "postcard_b": [1408, 768, 256, 192],
+    "almanac": [1664, 768, 384, 384],
+    "stars": [0, 1024, 384, 384],
+    "emblem": [384, 1024, 256, 256],
+    "gauge_a": [640, 1024, 128, 128],
+    "gauge_b": [768, 1024, 128, 128],
+    "gauge_c": [896, 1024, 128, 128],
+    "radio_scale": [640, 1152, 384, 96],
+    "notes": [1024, 1024, 256, 192],
+    "doormat": [1280, 960, 384, 192],
+    "ticks": [384, 1280, 256, 128],
+    "calendar": [1024, 1216, 256, 320],
+    "sketch": [1280, 1152, 384, 288],
+    "tag_a": [640, 1248, 128, 64],
+    "tag_b": [768, 1248, 128, 64],
+    "tag_c": [896, 1248, 128, 64],
+    "poster_a": [0, 1536, 384, 512],
+    "poster_b": [384, 1536, 384, 512],
+    "map_moon": [768, 1536, 512, 384],
+    "blueprint": [1280, 1536, 512, 384],
+    "photo_a": [1792, 1536, 256, 192],
+    "photo_b": [1792, 1728, 256, 192],
+    "note_a": [768, 1920, 256, 128],
+    "note_b": [1024, 1920, 256, 128],
+    "note_c": [1280, 1920, 256, 128],
+    "note_d": [1536, 1920, 256, 128],
+    "mark_a": [0, 1408, 256, 128],
+    "mark_b": [256, 1408, 128, 128],
+    "c3_glass": [640, 1312, 384, 96],
+    "c3_card": [640, 1408, 256, 128],
+    "r3_cross": [896, 1408, 128, 128],
+    "o3_slate": [1792, 1920, 256, 128],
+    "o3_crate": [1280, 1440, 384, 96]
+  },
+  "dials": {"size": 1024, "cell": 256, "names": ["speed", "height", "climb", "clock", "heat", "air", "pull", "lean"]}
+}

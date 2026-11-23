@@ -1,0 +1,48 @@
+<!doctype html><meta charset="utf-8"><title>Solar dome: single view vs cubemap</title>
+<body style="margin:0;background:#07080d;color:#d9dde4;font:13px system-ui,sans-serif">
+<div style="padding:12px 16px"><b>Solar in fulldome: single-view warp vs cubemap</b><br>
+The same frame (clock held, ?capture) drawn both ways, then compared inside the circle. Takes a while: it renders the game three times.
+Options: <code>?place=ship&amp;tilt=60</code> (cockpit), <code>?settle=20</code>.</div>
+<div id="SHOW" style="padding:0 16px">Rendering…</div>
+<iframe id="f" style="width:720px;height:720px;border:0;position:absolute;left:-9999px"></iframe>
+<pre id="OUT" style="display:none"></pre>
+<script>
+const qs = new URLSearchParams(location.search);
+const f = document.getElementById('f');
+f.src = 'index.html?capture&dome&nosound' + (qs.get('extra') || '');
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+(async () => {
+  try {
+  while (!f.contentWindow.lab?.ready) await wait(100);
+  const lab = f.contentWindow.lab, w = f.contentWindow;
+  lab.hold(true);
+  if (qs.get('time')) lab.time(+qs.get('time'));
+  const place = qs.get('place') || 'start';
+  if (place === 'ship') { lab.board(true); } else if (place === 'tree') { lab.tree(+(qs.get('n') || 0), +(qs.get('back') || 10)); } else lab.at(place);
+  if (qs.get('tilt')) lab.dome.state.tilt = +qs.get('tilt');
+  lab.dome.state.pipe = 'cube'; lab.step(1 / 60, +(qs.get('settle') || 40));
+  const grab = (pipe) => { lab.dome.state.pipe = pipe; lab.step(1 / 60, 1); return lab.renderer.domElement.toDataURL('image/png'); };
+  const a = grab('cube'), b = grab('single'), a2 = grab('cube');
+  const load = (u) => new Promise((r) => { const i = new Image(); i.onload = () => r(i); i.src = u; });
+  const [ia, ib, ia2] = await Promise.all([load(a), load(b), load(a2)]);
+  const W = ia.width, H = ia.height, c = document.createElement('canvas'); c.width = W; c.height = H; const x = c.getContext('2d');
+  const px = (im) => { x.drawImage(im, 0, 0); return x.getImageData(0, 0, W, H).data; };
+  const A = px(ia), B = px(ib), A2 = px(ia2);
+  const s = Math.min(W, H), cx = W / 2, cy = H / 2;
+  const stats = (P, Q) => { let n = 0, sum = 0, sq = 0, bad = 0;
+    for (let y = 0; y < H; y++) for (let xx = 0; xx < W; xx++) { const dx = (xx + .5 - cx) / (s / 2), dy = (y + .5 - cy) / (s / 2); if (dx*dx + dy*dy > 0.97) continue;
+      const i = (y * W + xx) * 4; let m = 0; for (let k = 0; k < 3; k++) { const d = Math.abs(P[i+k] - Q[i+k]); sum += d; sq += d*d; if (d > m) m = d; } if (m > 24) bad++; n++; }
+    return { mae: +(sum / (3*n)).toFixed(2), psnr: +(10*Math.log10(65025 / Math.max(sq/(3*n), 1e-9))).toFixed(1), badPct: +(bad/n*100).toFixed(2) }; };
+  // thumbnails: cube | single | |diff|x4
+  const T = 320, o = document.createElement('canvas'); o.width = T * 3; o.height = T; const ox = o.getContext('2d');
+  const crop = [(W - s) / 2, (H - s) / 2, s, s];
+  ox.drawImage(ia, ...crop, 0, 0, T, T); ox.drawImage(ib, ...crop, T, 0, T, T);
+  const dI = x.createImageData(W, H); for (let i = 0; i < A.length; i += 4) { for (let k = 0; k < 3; k++) dI.data[i+k] = Math.min(255, Math.abs(A[i+k]-B[i+k]) * 4); dI.data[i+3] = 255; }
+  x.putImageData(dI, 0, 0); ox.drawImage(c, ...crop, 2 * T, 0, T, T);
+  const st = stats(A, B), base = stats(A, A2);
+  document.getElementById('SHOW').innerHTML = `<p>Single view vs cubemap: mean |Δ| <b>${st.mae}</b>/255 · PSNR <b>${st.psnr} dB</b> · ${st.badPct}% of pixels off by more than 24<br>
+    Cubemap vs itself, a frame apart (the floor): PSNR ${base.psnr} dB</p><img src="${o.toDataURL('image/png')}" style="max-width:100%"><p>cubemap · single view · |difference| ×4</p>`;
+  document.getElementById('OUT').textContent = JSON.stringify({ fullA: qs.has('full') ? a : '', fullB: qs.has('full') ? b : '', cubeVsSingle: stats(A, B), cubeVsCube: stats(A, A2), size: [W, H], thumbs: o.toDataURL('image/png') });
+  } catch (e) { document.getElementById('OUT').textContent = 'ERR ' + e.message + e.stack; }
+})();
+</script>
