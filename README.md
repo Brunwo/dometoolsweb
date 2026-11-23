@@ -50,3 +50,7 @@ F = dome centre direction, U = image-up (dome back), R = right
 - Skip cube faces that fall outside the dome cone (for example, the down face at 180° and tilt 0°).
 - Load glTF scenes, plus video/NDI-like streaming output (WebRTC / WebCodecs).
 - An in-browser dome preview: an inside-the-dome 3D view of the dome master.
+
+## Demo: Solar in fulldome
+
+`solar/` is a build of [blendi/solar](https://patch.gg/play/blendi/solar) (MIT; music by Kevin MacLeod, CC BY 4.0, credited in its menu and in `solar/CREDITS.md`) with a `?dome` mode that renders the game as a live dome master, using the same cubemap → equidistant fisheye method as this page. Open `solar/?dome`, or `solar/?dome=30` for a dome tilted 30°.
