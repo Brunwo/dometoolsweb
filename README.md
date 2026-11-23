@@ -1,5 +1,7 @@
 # DomeTools Web
 
+**Live demo:** https://brunwo.github.io/dometoolsweb/
+
 A web adaptation of [prefrontalcortex/DomeTools](https://github.com/prefrontalcortex/DomeTools) (Unity fulldome toolkit), using plain WebGL2 with no dependencies.
 
 ## Step 1: projection (done)
