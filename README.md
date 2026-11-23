@@ -4,7 +4,7 @@
 
 A web adaptation of [prefrontalcortex/DomeTools](https://github.com/prefrontalcortex/DomeTools) (Unity fulldome toolkit), using plain WebGL2 with no dependencies.
 
-## Step 1: projection (done)
+## Projection
 
 Open `index.html` in Chrome, Edge or Firefox (double-clicking it works, no server needed).
 
@@ -42,11 +42,41 @@ F = dome centre direction, U = image-up (dome back), R = right
 ### Export
 "Save dome master PNG" renders off-screen at 1024, 2048 or 4096 px. In Auto mode the cubemap face size is matched to the export resolution.
 
+## Two pipelines
+
+The page has two ways to make the dome master. Switch with **Pipeline** in the panel, the `P` key, or `?pipe=cube` / `?pipe=single`.
+
+| | Cubemap | Single-view warp (default) |
+| --- | --- | --- |
+| Passes per frame | the cube faces the dome can see (5 at 180°) | 1 |
+| How | render 90° faces, then look every output pixel up in the cube | every vertex goes straight to its fisheye position in the vertex shader |
+| Resampling | yes (cube → fisheye) | none, with optional 2×/4× MSAA |
+| Works for | dome master, equirect, perspective, any FOV | dome master only, best up to ~220° |
+| Needs | nothing special | meshes dense enough that edges can bend (cubes 10×10 per face; polar ground that follows the rig) |
+
+Single-view vertex projection: `θ = angle(d, F)`, `r = lensR(θ)`, `xy = r · normalize(d·R, d·U)`. Depth is linear distance between near and far, with `w = 1`. Vertices more than 40° behind the dome's rim are pushed past the far plane, so triangles near the back point don't wrap. The sky uses the inverse (`lensTheta`) per pixel, so it's exact.
+
+### Validation against the cubemap template
+
+**Validate** renders the same frame (1024²) through both pipelines and reports the mean |Δ|, PSNR, the share of pixels off by more than 24, and frame times, with cubemap / single / |Δ|×4 thumbnails. Results headless, in SwiftShader (a CPU renderer, so these timings understate a GPU):
+
+| Case | Mean \|Δ\| /255 | PSNR |
+| --- | --- | --- |
+| 180°, tilt 0 | 0.19 | 41.9 dB |
+| 180°, stereographic | 0.21 | 41.9 dB |
+| Rig beside a pillar | 0.70 | 35.6 dB |
+| Tilt 30° + calibration sky | 2.5 | 29–33 dB |
+| 220°, equisolid | 3.1 | 28–30 dB |
+
+The difference images show no shifted geometry. What remains is thin, high-frequency detail (1-px calibration lines, the distant ground grid at the horizon), which the single view draws sharp and the cubemap path softens by resampling.
+
+Speed at 1024², 180°: the cubemap path takes ~150 ms for 5 faces × 896². The single view takes ~53 ms without MSAA (×2.8) and ~100 ms with 4× MSAA (×1.6; MSAA is expensive on a CPU renderer and cheap on a GPU).
+
 ## Notes
 - Cubemap sampling uses LOD 0 with no mipmaps. Per-face mipmaps cause visible seams at face edges, so the "Auto" face size matches cube texel density to output pixel density instead.
 
 ## Next steps (ideas)
-- **Single-view Dome Warp**: DomeTools' efficient mode, which renders one wide view and warps it instead of 6 faces.
+- Port the single-view warp to Solar (every material's vertex projection, plus its depth-based air pass).
 - Skip cube faces that fall outside the dome cone (for example, the down face at 180° and tilt 0°).
 - Load glTF scenes, plus video/NDI-like streaming output (WebRTC / WebCodecs).
 - An in-browser dome preview: an inside-the-dome 3D view of the dome master.

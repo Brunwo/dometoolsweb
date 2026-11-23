@@ -58,7 +58,7 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
   <button id="toggle" title="Toggle settings (H)">☰</button>
   <aside id="panel">
     <h1>DomeTools Web</h1>
-    <div class="sub">Fulldome projection · step 1: cubemap → fisheye</div>
+    <div class="sub">Fulldome projection · cubemap or single-view warp</div>
 
     <details open>
       <summary><h2>Output</h2></summary>
@@ -68,6 +68,13 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
           <option value="1">Equirectangular 360°</option>
           <option value="2">Perspective preview</option>
         </select></label>
+      <label class="row sel"><span>Pipeline</span>
+        <select id="pipe">
+          <option value="single" selected>Single-view warp (1 pass)</option>
+          <option value="cube">Cubemap (up to 6 views)</option>
+        </select></label>
+      <label class="row sel"><span>Single MSAA</span>
+        <select id="msaaN"><option value="4" selected>4×</option><option value="2">2×</option><option value="0">Off</option></select></label>
       <label class="row sel"><span>Lens model</span>
         <select id="lens">
           <option value="0" selected>Equidistant (standard)</option>
@@ -87,7 +94,8 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
         <select id="cubeRes">
           <option value="auto" selected>Auto (match output)</option><option>512</option><option>1024</option><option>2048</option><option>4096</option>
         </select></label>
-      <div class="help">All 6 faces are rendered each frame from the rig position, then sampled once per output pixel. Auto matches cube texel density to output pixel density (×1.25).</div>
+      <div class="help">Cubemap pipeline: the faces the dome can see (5 of 6 at 180°; all 6 for the 360° and perspective views) are rendered from the rig position, then sampled once per output pixel. Auto matches cube texel density to output pixel density (×1.25).<br>
+      Single-view pipeline: every vertex is projected straight into the fisheye in the vertex shader, so the scene is drawn once, at output resolution, with 4× MSAA. Dome master only; the other views use the cubemap. Best up to ~220° FOV.</div>
     </details>
 
     <details open>
@@ -95,6 +103,14 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
       <label class="chk"><input id="anim" type="checkbox" checked> Animate</label>
       <label class="chk"><input id="calib" type="checkbox"> Calibration sky (15° az/el lines, red = front)</label>
       <button id="reset">Reset camera rig</button>
+    </details>
+
+    <details open>
+      <summary><h2>Validate</h2></summary>
+      <button id="validate">Compare single-view vs cubemap</button>
+      <div id="valOut" class="help" style="margin-top:6px"></div>
+      <canvas id="valImg" width="768" height="256" style="width:100%;display:none;margin-top:6px;border-radius:4px"></canvas>
+      <div id="valCap" class="help" style="display:none">cubemap · single view · |difference| ×4</div>
     </details>
 
     <details open>
@@ -119,7 +135,7 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
         Drag: turn rig (heading / pitch)<br>
         <kbd>H</kbd> show / hide settings<br>
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>E</kbd>/<kbd>Space</kbd> up · <kbd>Q</kbd> down · <kbd>Shift</kbd> fast<br>
-        <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> switch view · <kbd>G</kbd> grid
+        <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> switch view · <kbd>G</kbd> grid · <kbd>P</kbd> pipeline
       </div>
     </details>
   </aside>
@@ -221,15 +237,20 @@ function mesh({ pos, nrm, idx }) {
 }
 
 // ---------- geometry ----------
-function cubeGeo() {
+// Each face split into n×n quads: the single-view warp bends straight edges into curves, which only works
+// with enough vertices along them (the cubemap path doesn't care, so both paths share these meshes).
+function cubeGeo(n = 10) {
   const pos=[], nrm=[], idx=[];
   const faces = [[[1,0,0],[0,1,0]],[[-1,0,0],[0,1,0]],[[0,1,0],[0,0,-1]],[[0,-1,0],[0,0,1]],[[0,0,1],[0,1,0]],[[0,0,-1],[0,1,0]]];
-  for (const [n, up] of faces) {
-    const r = cross(up, n), b = pos.length / 3;
-    for (const [i, j] of [[-1,-1],[1,-1],[1,1],[-1,1]]) {
-      pos.push(...add(add(sc(n,.5), sc(r,i*.5)), sc(up,j*.5))); nrm.push(...n);
+  for (const [nn, up] of faces) {
+    const r = cross(up, nn), b = pos.length / 3;
+    for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
+      pos.push(...add(add(sc(nn,.5), sc(r,(i/n-.5))), sc(up,(j/n-.5)))); nrm.push(...nn);
     }
-    idx.push(b,b+1,b+2, b,b+2,b+3);
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const a = b + j*(n+1) + i;
+      idx.push(a, a+1, a+n+2, a, a+n+2, a+n+1);
+    }
   }
   return { pos, nrm, idx };
 }
@@ -249,14 +270,49 @@ function sphereGeo(seg = 48, rings = 24) {
   }
   return { pos, nrm, idx };
 }
-function planeGeo(s) {
-  return { pos:[-s,0,-s, s,0,-s, s,0,s, -s,0,s], nrm:[0,1,0,0,1,0,0,1,0,0,1,0], idx:[0,2,1, 0,3,2] };
+// Ground as a polar mesh centred under the rig, rings spaced geometrically: every triangle spans a small
+// angle as seen from the eye, near or far. It follows the rig; the grid is drawn from world position, so
+// the move is invisible.
+function groundGeo(rMax = 600, rings = 72, seg = 128) {
+  const pos=[0,0,0], nrm=[0,1,0], idx=[];
+  for (let k = 1; k <= rings; k++) {
+    const r = 0.25 * Math.pow(rMax / 0.25, (k - 1) / (rings - 1));
+    for (let i = 0; i < seg; i++) { const a = i / seg * Math.PI * 2; pos.push(Math.cos(a)*r, 0, Math.sin(a)*r); nrm.push(0,1,0); }
+  }
+  for (let i = 0; i < seg; i++) idx.push(0, 1 + (i+1)%seg, 1 + i);
+  for (let k = 0; k < rings - 1; k++) for (let i = 0; i < seg; i++) {
+    const a = 1 + k*seg + i, b = 1 + k*seg + (i+1)%seg, c = a + seg, d = b + seg;
+    idx.push(a, b, d, a, d, c);
+  }
+  return { pos, nrm, idx };
 }
 
 // ---------- shaders ----------
 const FS_TRI = `#version 300 es
 out vec2 vUv;
 void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); vUv = p; gl_Position = vec4(p*2.-1., 0., 1.); }`;
+
+// Lens model, both ways: r(θ) for projecting a direction (single-view vertex warp), θ(r) for a pixel's
+// direction (sky and cubemap lookup). Past a lens's limit the radius keeps growing, so nothing folds back.
+const LENS = `
+uniform int uLens; uniform float uFov; uniform vec3 uDF, uDU, uDR;
+float lensR(float th, float tmax) {
+  if (uLens == 0) return th / tmax;
+  if (uLens == 1) return sin(min(th, 3.1)*.5) / sin(tmax*.5) + max(th - 3.1, 0.);
+  if (uLens == 2) { float t = min(tmax, radians(179.)), c = radians(175.); return tan(min(th, c)*.5) / tan(t*.5) + max(th - c, 0.) * 8.; }
+  float t = min(tmax, 1.5707963); return sin(min(th, t)) / sin(t) + max(th - t, 0.);
+}
+float lensTheta(float r, float tmax) {
+  if (uLens == 0) return r * tmax;
+  if (uLens == 1) return 2. * asin(clamp(r * sin(tmax*.5), -1., 1.));
+  if (uLens == 2) { float t = min(tmax, radians(179.)); return 2. * atan(r * tan(t*.5)); }
+  float t = min(tmax, 1.5707963); return asin(clamp(r * sin(t), -1., 1.));
+}
+// p in the unit disc (+y = dome back) → world direction
+vec3 domeDir(vec2 p) {
+  float th = lensTheta(min(length(p), 1.), uFov * .5), ph = atan(p.y, p.x);
+  return sin(th) * (cos(ph) * uDR + sin(ph) * uDU) + cos(th) * uDF;
+}`;
 
 const COMMON = `
 const vec3 SKY_ZEN = vec3(.16,.36,.74), SKY_HOR = vec3(.70,.80,.90), SKY_GND = vec3(.30,.29,.27);
@@ -266,15 +322,17 @@ const SKY_FS = `#version 300 es
 precision highp float;
 ${COMMON}
 in vec2 vUv; out vec4 o;
-uniform mat4 uInvVP; uniform float uTime; uniform int uCalib;
+uniform mat4 uInvVP; uniform float uTime; uniform int uCalib, uWarp;
+${LENS}
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
 float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
   return mix(mix(hash(i),hash(i+vec2(1,0)),f.x), mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x), f.y); }
 float fbm(vec2 p){ float v=0., a=.5; for(int i=0;i<5;i++){ v+=a*noise(p); p=p*2.03+17.; a*=.5; } return v; }
 float gridLine(float x){ float w = fwidth(x); return 1. - smoothstep(0., 1.2, abs(fract(x-.5)-.5)/max(w,1e-5)); }
 void main(){
-  vec4 h = uInvVP * vec4(vUv*2.-1., 1., 1.);
-  vec3 d = normalize(h.xyz / h.w);
+  vec3 d;
+  if (uWarp == 1) d = normalize(domeDir(vUv*2.-1.));     // single view: the pixel's own dome direction
+  else { vec4 h = uInvVP * vec4(vUv*2.-1., 1., 1.); d = normalize(h.xyz / h.w); }
   vec3 col = d.y > 0. ? mix(SKY_HOR, SKY_ZEN, pow(d.y, .55)) : mix(SKY_HOR, SKY_GND, pow(-d.y, .35));
   if (d.y > 0.) {
     vec2 cp = d.xz / (d.y + .12) * 1.4 + uTime * vec2(.015, .008);
@@ -297,10 +355,26 @@ void main(){
 }`;
 
 const OBJ_VS = `#version 300 es
+precision highp float;
 layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNrm;
 uniform mat4 uVP, uModel;
+uniform int uWarp; uniform vec3 uEyeV; uniform vec2 uClip;   // single view: eye, (near, far)
+${LENS}
 out vec3 vN; out vec3 vW;
-void main(){ vec4 w = uModel * vec4(aPos, 1.); vW = w.xyz; vN = mat3(uModel) * aNrm; gl_Position = uVP * w; }`;
+void main(){
+  vec4 w = uModel * vec4(aPos, 1.); vW = w.xyz; vN = mat3(uModel) * aNrm;
+  if (uWarp == 0) { gl_Position = uVP * w; return; }
+  // Single-view dome warp: the vertex goes straight to where the lens puts its direction.
+  vec3 v = w.xyz - uEyeV; float len = length(v); vec3 d = v / max(len, 1e-6);
+  float th = acos(clamp(dot(d, uDF), -1., 1.));
+  vec2 q = vec2(dot(d, uDR), dot(d, uDU)); float ql = length(q);
+  vec2 xy = (ql > 1e-7 ? q / ql : vec2(1., 0.)) * lensR(th, uFov * .5);
+  // depth: distance, linear between near and far (w = 1: no perspective divide)
+  float z = (len - uClip.x) / (uClip.y - uClip.x) * 2. - 1.;
+  // well behind the dome the mapping wraps round the back point: such vertices are sent past the far plane
+  if (th > uFov * .5 + radians(40.)) z = 1.5;
+  gl_Position = vec4(xy, z, 1.);
+}`;
 
 const OBJ_FS = `#version 300 es
 precision highp float;
@@ -380,7 +454,28 @@ void main(){
   o = vec4(col * alpha, 1.);
 }`;
 
+// Single view: black outside the circle and the same grid as the cubemap warp, blended over the drawn scene.
+const MASK_FS = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 o;
+uniform int uGrid;
+${LENS}
+float lineAA(float x){ float w = fwidth(x); return 1. - smoothstep(0., 1.2, abs(fract(x-.5)-.5)/max(w,1e-5)); }
+void main(){
+  vec2 p = vUv * 2. - 1.;
+  float r = length(p), aa = fwidth(r), outside = smoothstep(1. - aa, 1. + aa, r);
+  vec3 col = vec3(1., .72, .3); float a = 0.;
+  if (uGrid == 1) {
+    float th = lensTheta(min(r, 1.), uFov * .5), td = degrees(th), ph = atan(p.y, p.x);
+    a = max(lineAA(td / 10.), lineAA(degrees(ph) / 30.) * smoothstep(.02, .1, r)) * .5;
+    float l3 = 1. - smoothstep(0., 2., abs(td - 90.) / max(fwidth(td), 1e-5));
+    col = mix(col, vec3(1., .2, .2), l3); a = max(a, l3);
+  }
+  o = vec4(mix(col, vec3(0.), outside), max(a * (1. - outside), outside));
+}`;
+
 const skyProg = program(FS_TRI, SKY_FS);
+const maskProg = program(FS_TRI, MASK_FS);
 const objProg = program(OBJ_VS, OBJ_FS);
 const warpProg = program(FS_TRI, WARP_FS);
 const emptyVAO = gl.createVertexArray();
@@ -413,14 +508,14 @@ function makeCube(size) {
 }
 
 // ---------- scene ----------
-const meshes = { cube: mesh(cubeGeo()), sphere: mesh(sphereGeo()), ground: mesh(planeGeo(600)) };
+const meshes = { cube: mesh(cubeGeo()), sphere: mesh(sphereGeo()), ground: mesh(groundGeo()) };
 function hsl(h, s, l) {
   const f = n => { const k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l); return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
   return [f(0), f(8), f(4)];
 }
 let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 const objects = [];
-objects.push({ mesh: meshes.ground, color: [.52,.53,.55], ground: 1, m: () => M.ident() });
+objects.push({ mesh: meshes.ground, color: [.52,.53,.55], ground: 1, m: () => M.translate(rig.pos[0], 0, rig.pos[2]) });
 // Ring of pillars: azimuth 0 = front (-Z), coloured by azimuth so orientation is readable in the dome.
 for (let i = 0; i < 12; i++) {
   const a = i / 12 * Math.PI * 2, h = 3 + (i % 3) * 2.5, R = 14;
@@ -448,7 +543,7 @@ const SUN = norm([0.35, 0.8, 0.45]);
 
 // ---------- state & UI ----------
 const $ = id => document.getElementById(id);
-const ui = ['mode','lens','fov','tilt','pfov','grid','cubeRes','anim','calib','exportRes'].reduce((o,k)=>(o[k]=$(k),o),{});
+const ui = ['mode','pipe','msaaN','lens','fov','tilt','pfov','grid','cubeRes','anim','calib','exportRes'].reduce((o,k)=>(o[k]=$(k),o),{});
 const DEFAULT_RIG = { pos: [0, 1.7, 0], yaw: 0, pitch: 0 };
 const rig = structuredClone(DEFAULT_RIG);
 let time = 0;
@@ -463,6 +558,8 @@ function syncLabels() {
 ui.mode.addEventListener('change', layoutHud);
 $('reset').onclick = () => Object.assign(rig, structuredClone(DEFAULT_RIG));
 $('export').onclick = exportPNG;
+$('validate').onclick = () => validate();
+{ const qs = new URLSearchParams(location.search); if (qs.get('pipe')) ui.pipe.value = qs.get('pipe'); }
 const app = $('app');
 function setCollapsed(c) { app.classList.toggle('collapsed', c); try { localStorage.setItem('dtw.collapsed', c ? '1' : '0'); } catch {} }
 $('toggle').onclick = () => setCollapsed(!app.classList.contains('collapsed'));
@@ -487,6 +584,7 @@ addEventListener('keydown', e => {
   if (e.code === 'Digit2') ui.mode.value = 1, layoutHud();
   if (e.code === 'Digit3') ui.mode.value = 2, layoutHud();
   if (e.code === 'KeyG') ui.grid.checked = !ui.grid.checked;
+  if (e.code === 'KeyP') ui.pipe.value = ui.pipe.value === 'single' ? 'cube' : 'single';
   if (e.code === 'KeyH') $('toggle').click();
   if (e.code === 'Space') e.preventDefault();
 });
@@ -520,20 +618,32 @@ function move(dt) {
 
 // ---------- rendering ----------
 const CUBE_PROJ = M.persp(Math.PI / 2, 1, 0.05, 2000);
-function drawSky(invVP) {
+// Lens uniforms (shared by the sky, the objects and the mask). W = the dome's basis, or null for a plain camera.
+function setLens(pr, W) {
+  gl.uniform1i(pr.u.uWarp, W ? 1 : 0);
+  if (!W) return;
+  gl.uniform1i(pr.u.uLens, +ui.lens.value);
+  gl.uniform1f(pr.u.uFov, rad(+ui.fov.value));
+  gl.uniform3fv(pr.u.uDF, W.F); gl.uniform3fv(pr.u.uDU, W.U); gl.uniform3fv(pr.u.uDR, W.r);
+}
+function domeBasis() { return basis(rig.pitch + 90 - +ui.tilt.value); }
+function drawSky(invVP, W = null) {
   gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
   gl.useProgram(skyProg.p);
-  gl.uniformMatrix4fv(skyProg.u.uInvVP, false, invVP);
+  setLens(skyProg, W);
+  if (invVP) gl.uniformMatrix4fv(skyProg.u.uInvVP, false, invVP);
   gl.uniform3fv(skyProg.u.uSun, SUN);
   gl.uniform1f(skyProg.u.uTime, time);
   gl.uniform1i(skyProg.u.uCalib, ui.calib.checked ? 1 : 0);
   gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
-function drawObjects(vp) {
+function drawObjects(vp, W = null) {
   gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
   gl.enable(gl.CULL_FACE);
   gl.useProgram(objProg.p);
-  gl.uniformMatrix4fv(objProg.u.uVP, false, vp);
+  setLens(objProg, W);
+  if (W) { gl.uniform3fv(objProg.u.uEyeV, rig.pos); gl.uniform2f(objProg.u.uClip, 0.05, 2000); }
+  else gl.uniformMatrix4fv(objProg.u.uVP, false, vp);
   gl.uniform3fv(objProg.u.uSun, SUN);
   gl.uniform3fv(objProg.u.uEye, rig.pos);
   for (const o of objects) {
@@ -545,18 +655,74 @@ function drawObjects(vp) {
   }
   gl.disable(gl.CULL_FACE);
 }
-function renderCube() {
+// F: the dome's centre, to skip faces wholly outside it (null: draw all six). Returns how many were drawn.
+function renderCube(F = null) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, cube.fbo);
   gl.viewport(0, 0, cube.size, cube.size);
-  const eye = rig.pos;
+  const eye = rig.pos, limit = rad(+ui.fov.value / 2) + Math.atan(Math.SQRT2);
+  let drawn = 0;
   for (let i = 0; i < 6; i++) {
     const { dir, up } = FACES[i];
+    if (F && Math.acos(Math.max(-1, Math.min(1, dot(dir, F)))) > limit) continue;
+    drawn++;
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_CUBE_MAP_POSITIVE_X + i, cube.tex, 0);
     gl.clear(gl.DEPTH_BUFFER_BIT);
     drawSky(M.invert(M.mul(CUBE_PROJ, M.lookAt([0,0,0], dir, up))));
     drawObjects(M.mul(CUBE_PROJ, M.lookAt(eye, add(eye, dir), up)));
   }
+  return drawn;
 }
+
+// ---------- single-view dome warp ----------
+// One pass straight into the fisheye: no cubemap, no resampling. Rendered into a multisampled buffer the size
+// of the circle, then blitted into place.
+let msaa = null;
+function ensureMsaa(s) {
+  const want = Math.min(+ui.msaaN.value, gl.getParameter(gl.MAX_SAMPLES));
+  if (msaa && msaa.size === s && msaa.samples === want) return;
+  if (msaa) { gl.deleteFramebuffer(msaa.fbo); gl.deleteRenderbuffer(msaa.col); gl.deleteRenderbuffer(msaa.dep); gl.deleteFramebuffer(msaa.rfbo); gl.deleteRenderbuffer(msaa.rcol); }
+  const samples = want;
+  const col = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, col);
+  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA8, s, s);
+  const dep = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, dep);
+  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT24, s, s);
+  const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, col);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, dep);
+  // (a multisampled buffer can only be resolved into one of the same format; the canvas has no alpha, so the
+  // resolve goes through a plain RGBA8 buffer, which can then be copied anywhere)
+  const rcol = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rcol);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, s, s);
+  const rfbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, rfbo);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rcol);
+  msaa = { fbo, col, dep, rfbo, rcol, size: s, samples };
+}
+function renderSingle(fbo, w, h, full) {
+  const [x, y, s] = domeViewport(w, h, full);
+  ensureMsaa(s);
+  const W = domeBasis();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, msaa.fbo);
+  gl.viewport(0, 0, s, s);
+  gl.clearColor(0, 0, 0, 1); gl.clearDepth(1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  drawSky(null, W);
+  drawObjects(null, W);
+  // circle mask and grid
+  gl.disable(gl.DEPTH_TEST);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(maskProg.p); setLens(maskProg, W);
+  gl.uniform1i(maskProg.u.uGrid, ui.grid.checked ? 1 : 0);
+  gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.disable(gl.BLEND);
+  // into place
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msaa.fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, msaa.rfbo);
+  gl.blitFramebuffer(0, 0, s, s, 0, 0, s, s, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.viewport(0, 0, w, h); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msaa.rfbo);
+  gl.blitFramebuffer(0, 0, s, s, x, y, x + s, y + s, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+}
+const singleOn = () => ui.pipe.value === 'single' && +ui.mode.value === 0;
 function domeViewport(w, h, full) {
   const s = Math.floor(Math.min(w, h));
   return [Math.floor((w - s) / 2), Math.floor((h - s) / 2), s, s];
@@ -625,11 +791,15 @@ function exportPNG() {
   const fbo = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
   gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb);
-  const prev = cube.size;
-  ensureCube(cubeSizeFor(0, N, N));
-  renderCube();
-  renderWarp(fbo, N, N, true);
-  ensureCube(prev);
+  if (ui.pipe.value === 'single') renderSingle(fbo, N, N, true);
+  else {
+    const prev = cube.size;
+    ensureCube(cubeSizeFor(0, N, N));
+    renderCube(domeBasis().F);
+    renderWarp(fbo, N, N, true);
+    ensureCube(prev);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
   const px = new Uint8Array(N * N * 4);
   gl.readPixels(0, 0, N, N, gl.RGBA, gl.UNSIGNED_BYTE, px);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -641,9 +811,78 @@ function exportPNG() {
   c2.toBlob(b => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(b);
-    a.download = `domemaster_${N}_${ui.fov.value}deg.png`;
+    a.download = `domemaster_${N}_${ui.fov.value}deg_${ui.pipe.value}.png`;
     a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }, 'image/png');
+}
+
+// ---------- validation: the same frame through both pipelines ----------
+function target(N) {
+  const rb = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rb);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, N, N);
+  const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb);
+  return { fbo, rb, free() { gl.deleteFramebuffer(fbo); gl.deleteRenderbuffer(rb); } };
+}
+function readAll(fbo, N) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  const px = new Uint8Array(N * N * 4); gl.readPixels(0, 0, N, N, gl.RGBA, gl.UNSIGNED_BYTE, px); return px;
+}
+function timeIt(fn, fbo, k = 5) {
+  const one = new Uint8Array(4);
+  fn(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, one);
+  const t0 = performance.now();
+  for (let i = 0; i < k; i++) fn();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, one);
+  return (performance.now() - t0) / k;
+}
+function validate(N = 1024) {
+  const A = target(N), Bt = target(N);
+  const prev = cube.size, F = domeBasis().F;
+  ensureCube(cubeSizeFor(0, N, N));
+  let faces = 0;
+  const tCube = timeIt(() => { faces = renderCube(F); renderWarp(A.fbo, N, N, true); }, A.fbo);
+  const pa = readAll(A.fbo, N);
+  const tSingle = timeIt(() => renderSingle(Bt.fbo, N, N, true), Bt.fbo);
+  const pb = readAll(Bt.fbo, N);
+  const cubeSize = cube.size;
+  ensureCube(prev); A.free(); Bt.free();
+  // compare inside the circle (the antialiased rim excluded)
+  let n = 0, sum = 0, sq = 0, bad = 0, max = 0;
+  const h = N / 2;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const dx = (x + .5 - h) / h, dy = (y + .5 - h) / h;
+    if (dx*dx + dy*dy > 0.985) continue;
+    const i = (y * N + x) * 4;
+    let m = 0;
+    for (let c = 0; c < 3; c++) { const d = Math.abs(pa[i+c] - pb[i+c]); sum += d; sq += d*d; if (d > m) m = d; }
+    if (m > 24) bad++;
+    if (m > max) max = m;
+    n++;
+  }
+  const mae = sum / (n * 3), mse = sq / (n * 3), psnr = 10 * Math.log10(255 * 255 / Math.max(mse, 1e-9));
+  const res = { N, mae, psnr, badPct: bad / n * 100, max, tCube, tSingle, faces, cubeSize, speedup: tCube / tSingle };
+  window.__validation = res;
+  // thumbnails: cubemap · single · |diff|×4
+  const c = $('valImg'), ctx = c.getContext('2d'), T = 256, img = ctx.createImageData(T * 3, T);
+  for (let y = 0; y < T; y++) for (let x = 0; x < T; x++) {
+    const sx = Math.floor(x * N / T), sy = N - 1 - Math.floor(y * N / T), i = (sy * N + sx) * 4;
+    for (let c3 = 0; c3 < 3; c3++) {
+      img.data[(y * T * 3 + x) * 4 + c3] = pa[i + c3];
+      img.data[(y * T * 3 + x + T) * 4 + c3] = pb[i + c3];
+      img.data[(y * T * 3 + x + 2 * T) * 4 + c3] = Math.min(255, Math.abs(pa[i + c3] - pb[i + c3]) * 4);
+    }
+    for (let k = 0; k < 3; k++) img.data[(y * T * 3 + x + k * T) * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  c.style.display = $('valCap').style.display = 'block';
+  $('valOut').innerHTML =
+    `<b>${N}² dome master, same frame</b><br>` +
+    `Mean |Δ| <b>${mae.toFixed(2)}</b>/255 · PSNR <b>${psnr.toFixed(1)} dB</b><br>` +
+    `${res.badPct.toFixed(2)}% of pixels differ by &gt; 24 (edges, mostly) · max ${max}<br>` +
+    `Cubemap: ${faces} faces × ${cubeSize}² → <b>${tCube.toFixed(1)} ms</b><br>` +
+    `Single view: 1 × ${N}² ×${msaa.samples || 1} MSAA → <b>${tSingle.toFixed(1)} ms</b> (×${res.speedup.toFixed(2)})`;
+  return res;
 }
 
 // ---------- loop ----------
@@ -654,12 +893,19 @@ function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
   if (ui.anim.checked) time += dt;
   move(dt);
-  ensureCube(cubeSizeFor(+ui.mode.value, canvas.width, canvas.height));
-  renderCube();
-  renderWarp(null, canvas.width, canvas.height, false);
+  let what;
+  if (singleOn()) {
+    renderSingle(null, canvas.width, canvas.height, false);
+    what = `single view ${msaa.size}²${msaa.samples ? ` ×${msaa.samples} MSAA` : ''}`;
+  } else {
+    ensureCube(cubeSizeFor(+ui.mode.value, canvas.width, canvas.height));
+    const faces = renderCube(+ui.mode.value === 0 ? domeBasis().F : null);
+    renderWarp(null, canvas.width, canvas.height, false);
+    what = `cube ${faces}×${cube.size}²`;
+  }
   fpsAcc += dt; fpsN++;
   if (fpsAcc > 0.5) { fps = fpsN / fpsAcc; fpsAcc = 0; fpsN = 0;
-    $('stats').textContent = `${fps.toFixed(0)} fps · cube 6×${cube.size}² · out ${canvas.width}×${canvas.height}\n` +
+    $('stats').textContent = `${fps.toFixed(0)} fps · ${what} · out ${canvas.width}×${canvas.height}\n` +
       `rig (${rig.pos.map(v=>v.toFixed(1)).join(', ')}) heading ${((rig.yaw*180/Math.PI)%360).toFixed(0)}° pitch ${rig.pitch.toFixed(0)}°`; }
   requestAnimationFrame(frame);
 }
