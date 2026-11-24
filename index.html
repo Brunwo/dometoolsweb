@@ -104,6 +104,7 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
       <label class="row sel"><span>Sky</span>
         <select id="sky"><option value="space" selected>Deep space · Milky Way</option><option value="day">Day sky</option></select></label>
       <label class="chk"><input id="ground" type="checkbox"> Ground plane</label>
+      <label class="chk"><input id="markers" type="checkbox"> Reference markers (pillars, zenith sphere)</label>
       <label class="chk"><input id="calib" type="checkbox"> Calibration sky (15° az/el lines, red = front)</label>
       <button id="reset">Reset camera rig</button>
     </details>
@@ -114,6 +115,14 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
       <div id="valOut" class="help" style="margin-top:6px"></div>
       <canvas id="valImg" width="768" height="256" style="width:100%;display:none;margin-top:6px;border-radius:4px"></canvas>
       <div id="valCap" class="help" style="display:none">cubemap · single view · |difference| ×4</div>
+    </details>
+
+    <details open>
+      <summary><h2>Black hole</h2></summary>
+      <label class="chk"><input id="bh" type="checkbox" checked> Show black hole (deep-space sky)</label>
+      <label class="row"><span>Disk spin</span><input id="spin" type="range" min="0" max="3" step="0.05" value="1"><span class="v" id="spinV"></span></label>
+      <label class="chk"><input id="dop" type="checkbox" checked> Doppler beaming &amp; redshift</label>
+      <div class="help">Light is traced through curved space round a non-spinning black hole (r<sub>s</sub> = 2.5 m, 56 m away, 34° up in front): the shadow, the photon ring, and the far side of the disk bent over and under it. The disk turns like real orbiting gas, inner rings faster (ω ∝ r<sup>−3/2</sup>); the side coming toward you is brighter and bluer. Fly toward it with the arrows; tick <i>Animate</i> to see it turn.</div>
     </details>
 
     <details open>
@@ -413,6 +422,85 @@ vec3 spaceSky(vec3 d, float px){
   col += starLayer(d, 520., .9 * dens * band + .05, .3, px, false);
   return col;
 }
+
+// ---------- the black hole: rays traced through curved space ----------
+// Schwarzschild lensing, in units of the Schwarzschild radius r_s, in the disk's own frame (+y = disk normal).
+// Each ray is traced back from the eye: photon paths obey a'' = -1.5 h² p / r⁵ (h = |p × v|, conserved), which is
+// exact for light round a non-spinning black hole. Rays that fall below r_s are swallowed (the shadow); those that
+// cross the disk's plane between ISCO (3 r_s) and its outer edge pick up its light; the rest go on to the stars.
+// Outside the sphere where rays are traced (30 r_s) the weak-field bend 2 r_s / b is added analytically, split at
+// entry and exit, so the sky has no seam where the tracing starts.
+uniform vec3 uEyeS; uniform vec4 uBH; uniform vec3 uBHN, uBHX; uniform int uBHOn; uniform float uSpin, uDop;
+const float RIN = 3., ROUT = 13., RINF = 30.;
+vec3 bendRest(vec3 p, vec3 v){                     // add the bend still to come, for a straight path from p onward
+  vec3 c = p - v * dot(p, v); float b = length(c);
+  float a = (1. / max(b, 1.)) * (1. - dot(p, v) / length(p));
+  return normalize(v - a * c / max(b, 1e-4));
+}
+vec3 diskColor(float x){                          // x: temperature seen (1 = the hottest ring, before shifts)
+  x = clamp(x, 0., 2.);
+  vec3 c = mix(vec3(.55,.09,.01), vec3(1.,.42,.1), smoothstep(.15, .55, x));
+  c = mix(c, vec3(1.,.8,.52), smoothstep(.55, .95, x));
+  return mix(c, vec3(.78,.86,1.), smoothstep(1.05, 1.7, x));
+}
+void diskHit(vec3 q, vec3 v, inout vec3 acc, inout float A){
+  float r = length(q);
+  if (r < RIN || r > ROUT) return;
+  // Keplerian shear: inner rings turn faster (ω ∝ r^-3/2), so the gas winds into streaks
+  float ph = atan(q.z, q.x) - uSpin * uTime * pow(RIN / r, 1.5);
+  float n = fbm3(vec3(cos(ph) * 2.2, sin(ph) * 2.2, r * 1.9), 5);
+  float n2 = fbm3(vec3(cos(ph) * 7., sin(ph) * 7., r * 6.5), 3);
+  float clumps = .35 + 1.1 * n * n + .45 * n2;
+  // thin-disk emissivity, peaking just outside ISCO
+  float f = pow(RIN / r, 3.) * (1. - sqrt(RIN / r)) / .0569;
+  float edge = smoothstep(RIN, RIN * 1.06, r) * smoothstep(ROUT, ROUT * .7, r);
+  float I = f * clumps * edge;
+  // Doppler beaming and gravitational redshift: the side coming toward us is brighter and bluer
+  vec3 t = normalize(vec3(-q.z, 0., q.x));
+  float beta = inversesqrt(2. * (r - 1.)), gam = inversesqrt(1. - beta * beta);
+  float g = sqrt(1. - 1. / r) / (gam * (1. - beta * dot(t, -v)));
+  g = mix(1., g, uDop);
+  vec3 e = diskColor(pow(max(f, 0.), .25) * g * (.85 + .3 * n2)) * I * pow(g, 3.) * 3.2;
+  float a = clamp(I * 1.25, 0., .96) * edge;
+  acc += (1. - A) * e * (.4 + .6 * a); A += (1. - A) * a;
+}
+// returns the direction the ray leaves in (or 0 if swallowed); disk light in-front in acc/A
+vec3 traceHole(vec3 eyeW, vec3 dW, out vec3 acc, out float A){
+  acc = vec3(0.); A = 0.;
+  vec3 X = uBHX, N = uBHN, Z = cross(X, N);
+  vec3 ow = (eyeW - uBH.xyz) / uBH.w;
+  vec3 p = vec3(dot(ow, X), dot(ow, N), dot(ow, Z)), v = vec3(dot(dW, X), dot(dW, N), dot(dW, Z));
+  float r0 = length(p);
+  if (r0 > RINF) {
+    float tc = -dot(p, v), b = length(p + v * tc);
+    if (tc <= 0. || b >= RINF) { v = bendRest(p, v); return X * v.x + N * v.y + Z * v.z; }
+    vec3 pe = p + v * (tc - sqrt(RINF * RINF - b * b));
+    // the bend between the eye and the entry point
+    vec3 c = p - v * dot(p, v);
+    float a = (1. / max(b, 1.)) * (dot(pe, v) / RINF - dot(p, v) / r0);
+    v = normalize(v - a * c / max(length(c), 1e-4));
+    p = pe;
+  }
+  float h2 = dot(cross(p, v), cross(p, v));
+  for (int i = 0; i < 260; i++) {
+    float r = length(p);
+    if (r < 1.) return vec3(0.);
+    float dt = clamp(.09 * (r - .8), .015, 1.4);
+    vec3 a1 = -1.5 * h2 * p / pow(r, 5.);
+    vec3 vh = v + a1 * dt * .5;
+    vec3 pn = p + vh * dt;
+    float rn = length(pn);
+    vec3 a2 = -1.5 * h2 * pn / pow(max(rn, .5), 5.);
+    vec3 vn = vh + a2 * dt * .5;
+    if (p.y * pn.y < 0.) { float s = p.y / (p.y - pn.y); diskHit(mix(p, pn, s), normalize(mix(v, vn, s)), acc, A); }
+    p = pn; v = vn;
+    if (A > .99) return vec3(0.);
+    if (rn > RINF && dot(p, v) > 0.) break;
+  }
+  v = normalize(v);
+  if (length(p) > RINF * .9) v = bendRest(p, v);
+  return X * v.x + N * v.y + Z * v.z;
+}
 float gridLine(float x){ float w = fwidth(x); return 1. - smoothstep(0., 1.2, abs(fract(x-.5)-.5)/max(w,1e-5)); }
 void main(){
   vec3 d;
@@ -421,9 +509,16 @@ void main(){
   vec3 col;
   if (uSpace == 1) {
     float px = max(length(fwidth(d)), 1e-5);
-    col = spaceSky(d, px);
-    float s = max(dot(d, uSun), 0.);
-    col += vec3(1.,.95,.88) * (smoothstep(.99996, .99999, s) * 8. + pow(s, 3000.) * 2. + pow(s, 200.) * .08);   // the sun: a hard white disc, no air to soften it
+    if (uBHOn == 1) {
+      vec3 acc; float A;
+      vec3 dOut = traceHole(uEyeS, d, acc, A);
+      col = dot(dOut, dOut) > .5 ? spaceSky(dOut, px) : vec3(0.);
+      col = acc + (1. - A) * col;
+    } else {
+      col = spaceSky(d, px);
+      float s = max(dot(d, uSun), 0.);
+      col += vec3(1.,.95,.88) * (smoothstep(.99996, .99999, s) * 8. + pow(s, 3000.) * 2. + pow(s, 200.) * .08);   // the sun: a hard white disc, no air to soften it
+    }
   } else {
   col = d.y > 0. ? mix(SKY_HOR, SKY_ZEN, pow(d.y, .55)) : mix(SKY_HOR, SKY_GND, pow(-d.y, .35));
   if (d.y > 0.) {
@@ -611,34 +706,31 @@ function hsl(h, s, l) {
 let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
 const objects = [];
 objects.push({ mesh: meshes.ground, color: [.52,.53,.55], ground: 1, m: () => M.translate(rig.pos[0], 0, rig.pos[2]) });
-// Ring of pillars: azimuth 0 = front (-Z), coloured by azimuth so orientation is readable in the dome.
+// Reference markers (off by default): a ring of pillars coloured by azimuth (red = front, -Z) and a sphere
+// straight overhead, to check orientation in the dome.
 for (let i = 0; i < 12; i++) {
   const a = i / 12 * Math.PI * 2, h = 3 + (i % 3) * 2.5, R = 14;
   const x = Math.sin(a) * R, z = -Math.cos(a) * R;
-  objects.push({ mesh: meshes.cube, color: hsl(i / 12, .65, .55),
+  objects.push({ mesh: meshes.cube, color: hsl(i / 12, .65, .55), marker: 1,
     m: () => M.chain(M.translate(x, h/2, z), M.rotY(-a), M.scale(1.4, h, 1.4)) });
 }
-// Tumbling cubes overhead
-for (let i = 0; i < 14; i++) {
-  const a = rnd() * Math.PI * 2, R = 3 + rnd() * 14, y = 6 + rnd() * 22, s = 1 + rnd() * 2.2;
-  const sx = rnd() * 2 - 1, sy = rnd() * 2 - 1, col = hsl(.05 + rnd() * .12, .7, .55);
-  objects.push({ mesh: meshes.cube, color: col,
-    m: t => M.chain(M.translate(Math.cos(a) * R, y + Math.sin(t * .6 + i) * .6, Math.sin(a) * R), M.rotY(t * sx), M.rotX(t * sy * .7), M.scale(s, s, s)) });
-}
-// Orbiting spheres
-for (let i = 0; i < 6; i++) {
-  const R = 6 + i * 1.6, y = 9 + i * 2.2, sp = .25 + i * .05, s = 1.2 + (i % 2);
-  objects.push({ mesh: meshes.sphere, color: hsl(.55 + i * .06, .5, .6),
-    m: t => { const a = t * sp + i; return M.chain(M.translate(Math.cos(a) * R, y, Math.sin(a) * R), M.scale(s, s, s)); } });
-}
-// Zenith marker: big sphere straight overhead
-objects.push({ mesh: meshes.sphere, color: [.95,.95,.92], m: () => M.chain(M.translate(0, 38, 0), M.scale(5, 5, 5)) });
+objects.push({ mesh: meshes.sphere, color: [.95,.95,.92], marker: 1, m: () => M.chain(M.translate(0, 38, 0), M.scale(5, 5, 5)) });
 
 const SUN = norm([0.35, 0.8, 0.45]);
+const BH = (() => {
+  const C = [0, 33, -46], rs = 2.5, eye = [0, 1.7, 0];
+  const v = norm(sub(C, eye)), up = [0, 1, 0];
+  let n = norm(sub(up, sc(v, dot(up, v))));
+  const t = rad(9);                                   // tipped toward us: we see the disk's upper face
+  n = norm(add(sc(n, Math.cos(t)), sc(v, -Math.sin(t))));
+  const k = rad(12), w = cross(v, n);                  // rolled a little, so the disk is not dead level
+  n = norm(add(sc(n, Math.cos(k)), sc(w, Math.sin(k))));
+  return { C, rs, N: n, X: norm(cross(n, v)) };
+})();
 
 // ---------- state & UI ----------
 const $ = id => document.getElementById(id);
-const ui = ['sky','ground','mode','pipe','msaaN','lens','fov','tilt','pfov','grid','cubeRes','anim','calib','exportRes'].reduce((o,k)=>(o[k]=$(k),o),{});
+const ui = ['bh','spin','dop','markers','sky','ground','mode','pipe','msaaN','lens','fov','tilt','pfov','grid','cubeRes','anim','calib','exportRes'].reduce((o,k)=>(o[k]=$(k),o),{});
 const DEFAULT_RIG = { pos: [0, 1.7, 0], yaw: 0, pitch: 0 };
 const rig = structuredClone(DEFAULT_RIG);
 let time = 0;
@@ -647,9 +739,10 @@ function syncLabels() {
   $('fovV').textContent = ui.fov.value + '°';
   $('tiltV').textContent = ui.tilt.value + '°';
   $('pfovV').textContent = ui.pfov.value + '°';
+  $('spinV').textContent = (+ui.spin.value).toFixed(2) + '×';
   layoutHud();
 }
-['fov','tilt','pfov'].forEach(k => ui[k].addEventListener('input', syncLabels));
+['fov','tilt','pfov','spin'].forEach(k => ui[k].addEventListener('input', syncLabels));
 ui.mode.addEventListener('change', layoutHud);
 $('reset').onclick = () => Object.assign(rig, structuredClone(DEFAULT_RIG));
 $('export').onclick = exportPNG;
@@ -754,6 +847,12 @@ function drawSky(invVP, W = null) {
   gl.uniform1f(skyProg.u.uTime, time);
   gl.uniform1i(skyProg.u.uCalib, ui.calib.checked ? 1 : 0);
   gl.uniform1i(skyProg.u.uSpace, ui.sky.value === 'space' ? 1 : 0);
+  gl.uniform1i(skyProg.u.uBHOn, ui.bh.checked ? 1 : 0);
+  gl.uniform3fv(skyProg.u.uEyeS, rig.pos);
+  gl.uniform4f(skyProg.u.uBH, ...BH.C, BH.rs);
+  gl.uniform3fv(skyProg.u.uBHN, BH.N); gl.uniform3fv(skyProg.u.uBHX, BH.X);
+  gl.uniform1f(skyProg.u.uSpin, +ui.spin.value);
+  gl.uniform1f(skyProg.u.uDop, ui.dop.checked ? 1 : 0);
   gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 function drawObjects(vp, W = null) {
@@ -768,6 +867,7 @@ function drawObjects(vp, W = null) {
   gl.uniform1i(objProg.u.uSpace, ui.sky.value === 'space' ? 1 : 0);
   for (const o of objects) {
     if (o.ground && !ui.ground.checked) continue;
+    if (o.marker && !ui.markers.checked) continue;
     gl.uniformMatrix4fv(objProg.u.uModel, false, o.m(time));
     gl.uniform3fv(objProg.u.uColor, o.color);
     gl.uniform1i(objProg.u.uGround, o.ground || 0);

@@ -37,6 +37,9 @@ F = dome centre direction, U = image-up (dome back), R = right
 ### Sky
 **Deep space** (default): stars all round and the Milky Way, all procedural (no textures). There are 4 layers of stars on a 3D grid, with temperature colours and few bright ones. The band is brighter and warmer toward its bulge, with star clouds, dark dust lanes and filaments, and a few red hydrogen clouds plus one blue reflection nebula. The sun is a hard disc with no atmosphere, and objects get only faint ambient light and no haze. Inspired by a wide-field photo of the galactic centre, not copied from it. **Day sky** brings back the blue sky, clouds and ground. The ground plane can be toggled separately.
 
+### Black hole
+A ray-traced Schwarzschild black hole (r_s = 2.5 m, 56 m away, 34° up in front), drawn in the sky shader, so both pipelines get it. Each pixel's ray is traced back through curved space with the exact photon equation a = −1.5 h² p / r⁵, with the weak-field bend added analytically outside 30 r_s. This gives the shadow, the photon ring, the far side of the disk lensed over and under the hole, and stars smeared round it. The accretion disk runs from ISCO (3 r_s) to 13 r_s, with thin-disk emissivity and Keplerian differential rotation (ω ∝ r^-3/2, so the gas winds into streaks). Doppler beaming and gravitational redshift (switchable) make the approaching side brighter and bluer. The spinning cubes and spheres are gone; the pillars and zenith sphere remain as optional reference markers.
+
 ### Verification aids
 - Dome grid overlay: rings every 10° from the zenith, spokes every 30°, and the horizon ring in red.
 - Calibration sky: azimuth and elevation lines every 15°, the front meridian in red, and the horizon in yellow.
