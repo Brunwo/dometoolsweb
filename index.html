@@ -101,6 +101,9 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
     <details open>
       <summary><h2>Scene</h2></summary>
       <label class="chk"><input id="anim" type="checkbox" checked> Animate</label>
+      <label class="row sel"><span>Sky</span>
+        <select id="sky"><option value="space" selected>Deep space · Milky Way</option><option value="day">Day sky</option></select></label>
+      <label class="chk"><input id="ground" type="checkbox"> Ground plane</label>
       <label class="chk"><input id="calib" type="checkbox"> Calibration sky (15° az/el lines, red = front)</label>
       <button id="reset">Reset camera rig</button>
     </details>
@@ -320,7 +323,7 @@ vec3 domeDir(vec2 p) {
 
 const COMMON = `
 const vec3 SKY_ZEN = vec3(.16,.36,.74), SKY_HOR = vec3(.70,.80,.90), SKY_GND = vec3(.30,.29,.27);
-uniform vec3 uSun;`;
+uniform vec3 uSun; uniform int uSpace;`;
 
 const SKY_FS = `#version 300 es
 precision highp float;
@@ -332,12 +335,97 @@ float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
 float noise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
   return mix(mix(hash(i),hash(i+vec2(1,0)),f.x), mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x), f.y); }
 float fbm(vec2 p){ float v=0., a=.5; for(int i=0;i<5;i++){ v+=a*noise(p); p=p*2.03+17.; a*=.5; } return v; }
+
+// ---------- deep space: stars everywhere and the Milky Way (procedural, no textures) ----------
+float h31(vec3 p){ p = fract(p * vec3(.1031, .1030, .0973)); p += dot(p, p.yxz + 33.33); return fract((p.x + p.y) * p.z); }
+vec3 h33(vec3 p){ p = fract(p * vec3(.1031, .1030, .0973)); p += dot(p, p.yxz + 33.33); return fract((p.xxy + p.yxx) * p.zyx); }
+float n3(vec3 p){ vec3 i = floor(p), f = fract(p); f = f*f*(3.-2.*f);
+  return mix(mix(mix(h31(i), h31(i+vec3(1,0,0)), f.x), mix(h31(i+vec3(0,1,0)), h31(i+vec3(1,1,0)), f.x), f.y),
+             mix(mix(h31(i+vec3(0,0,1)), h31(i+vec3(1,0,1)), f.x), mix(h31(i+vec3(0,1,1)), h31(i+vec3(1,1,1)), f.x), f.y), f.z); }
+float fbm3(vec3 p, int oct){ float v = 0., a = .5; for (int i = 0; i < 7; i++) { if (i >= oct) break; v += a * n3(p); p = p * 2.07 + 7.3; a *= .5; } return v; }
+// The galaxy's frame: its plane crosses the sky steeply, its centre a little above the front-left horizon.
+const vec3 GAL_N = vec3(-0.5435, 0.2465, 0.8024);
+vec3 galC(){ vec3 a = normalize(vec3(-0.55, 0.45, -1.0)); return normalize(a - dot(a, GAL_N) * GAL_N); }
+
+// one layer of stars: cells of a 3D grid round the eye, at most one star each (its direction decides its cell,
+// so no star is counted twice); near layers look at the 8 cells round the pixel so wide stars aren't cut
+vec3 starLayer(vec3 d, float scale, float dens, float flux, float px, bool wide){
+  vec3 p = d * scale, acc = vec3(0.);
+  vec3 base = floor(p), sgn = sign(fract(p) - .5);
+  for (int k = 0; k < 8; k++) {
+    if (!wide && k > 0) break;
+    vec3 c = base + vec3(k & 1, (k >> 1) & 1, (k >> 2) & 1) * sgn;
+    vec3 h = h33(c + scale);
+    if (h.x > dens) continue;
+    vec3 sp = normalize(c + .2 + .6 * h33(c * 1.7 + 3.1));
+    if (floor(sp * scale) != c) continue;
+    float r = length(d - sp);
+    float sig = max(.42 * px, 2e-4);
+    float m = pow(h.y, 12.) * flux + .025 * flux * h.y * h.y;             // few bright, many faint
+    float I = m * exp(-.5 * r * r / (sig * sig));
+    // colour by temperature: hot blue-white to cool orange
+    float t = h.z;
+    vec3 tc = t < .15 ? vec3(.62,.74,1.) : t < .55 ? vec3(.9,.93,1.) : t < .85 ? vec3(1.,.92,.78) : vec3(1.,.72,.48);
+    acc += tc * I;
+    // a soft halo round the brightest
+    acc += tc * m * .015 * exp(-r / (sig * 4.)) * step(.985, h.y);
+  }
+  return acc;
+}
+vec3 spaceSky(vec3 d, float px){
+  vec3 gc = galC(), e2 = cross(GAL_N, gc);
+  float b = asin(clamp(dot(d, GAL_N), -1., 1.));
+  float l = atan(dot(d, e2), dot(d, gc));
+  // the band: thicker and brighter round the centre (the bulge), wavering
+  float bulge = exp(-l * l / (2. * .55 * .55));
+  float wv = (fbm3(d * 2.2, 4) - .5) * .09;
+  float w = .085 + .13 * bulge;
+  float bb = b + wv;
+  float band = exp(-bb * bb / (w * w));
+  float glow = exp(-bb * bb / (w * w * 7.)) * (.35 + .65 * bulge);
+  // star clouds: lumpy, grainy light
+  float clouds = .45 + .9 * fbm3(d * 7., 5);
+  float grain = .7 + .6 * fbm3(d * 40., 3);
+  // dark dust: a rift along the middle, with filaments reaching out of the band
+  float ridge = 1. - abs(fbm3(d * 5.5 + 11., 6) * 2. - 1.);
+  float lane = exp(-pow((bb + .02 * (1. - bulge)) / (w * .55), 2.));
+  float fil = smoothstep(.62, .9, ridge) * exp(-bb * bb / (w * w * 3.2));
+  float dust = clamp(lane * smoothstep(.35, .75, fbm3(d * 9. + 3., 5)) * 1.2 + fil * .9, 0., 1.);
+  vec3 warm = vec3(1., .82, .58), cool = vec3(.72, .8, 1.);
+  vec3 col = vec3(.003, .004, .009);                                    // the black between
+  col += mix(cool, vec3(.92,.9,.88), bulge) * glow * .14;
+  col += mix(cool * .9, warm, smoothstep(.15, .9, bulge * band)) * band * clouds * clouds * grain * (.5 + .7 * bulge);
+  col *= 1. - .82 * dust;
+  col += vec3(.2, .11, .05) * dust * band * (.25 + .3 * bulge);                       // the dust's brown edges, lit from behind
+  // glowing gas: a few red (hydrogen) clouds and one blue reflection nebula, near the band
+  const vec3 NEB[5] = vec3[5](vec3(-0.30, 0.62, -0.72), vec3(-0.62, 0.22, -0.75), vec3(0.15, 0.85, -0.50), vec3(-0.80, 0.50, -0.33), vec3(-0.05, 0.40, -0.92));
+  const vec4 NEBC[5] = vec4[5](vec4(.95,.22,.34,.06), vec4(.9,.25,.4,.09), vec4(.95,.3,.42,.045), vec4(.35,.5,1.,.05), vec4(.9,.2,.3,.035));
+  for (int i = 0; i < 5; i++) {
+    vec3 nd = normalize(NEB[i]); float r = length(d - nd) / NEBC[i].a;
+    float f = exp(-r * r) * (.4 + 1.1 * fbm3(d * 22. + float(i) * 5., 5));
+    col += NEBC[i].rgb * f * .16 * (1. - .6 * dust);
+  }
+  // stars: denser in the band, fewer behind the dust
+  float dens = clamp(.25 + 1.6 * band + .4 * glow, 0., 1.) * (1. - .8 * dust);
+  col += starLayer(d, 22., .22, 10., px, true);
+  col += starLayer(d, 70., .2 + .5 * dens, 1.8, px, true);
+  col += starLayer(d, 200., .55 * dens, 1., px, false);
+  col += starLayer(d, 520., .9 * dens * band + .05, .3, px, false);
+  return col;
+}
 float gridLine(float x){ float w = fwidth(x); return 1. - smoothstep(0., 1.2, abs(fract(x-.5)-.5)/max(w,1e-5)); }
 void main(){
   vec3 d;
   if (uWarp == 1) d = normalize(domeDir(vUv*2.-1.));     // single view: the pixel's own dome direction
   else { vec4 h = uInvVP * vec4(vUv*2.-1., 1., 1.); d = normalize(h.xyz / h.w); }
-  vec3 col = d.y > 0. ? mix(SKY_HOR, SKY_ZEN, pow(d.y, .55)) : mix(SKY_HOR, SKY_GND, pow(-d.y, .35));
+  vec3 col;
+  if (uSpace == 1) {
+    float px = max(length(fwidth(d)), 1e-5);
+    col = spaceSky(d, px);
+    float s = max(dot(d, uSun), 0.);
+    col += vec3(1.,.95,.88) * (smoothstep(.99996, .99999, s) * 8. + pow(s, 3000.) * 2. + pow(s, 200.) * .08);   // the sun: a hard white disc, no air to soften it
+  } else {
+  col = d.y > 0. ? mix(SKY_HOR, SKY_ZEN, pow(d.y, .55)) : mix(SKY_HOR, SKY_GND, pow(-d.y, .35));
   if (d.y > 0.) {
     vec2 cp = d.xz / (d.y + .12) * 1.4 + uTime * vec2(.015, .008);
     float c = smoothstep(.48, .82, fbm(cp));
@@ -345,6 +433,7 @@ void main(){
   }
   float s = max(dot(d, uSun), 0.);
   col += vec3(1.,.9,.7) * (pow(s, 900.) * 6. + pow(s, 10.) * .25);
+  }
   if (uCalib == 1) {
     float el = degrees(asin(clamp(d.y,-1.,1.)));
     float az = degrees(atan(d.x, -d.z));          // 0° = front (-Z), clockwise from above
@@ -355,6 +444,7 @@ void main(){
     float hor = 1. - smoothstep(0., 2., abs(el)/max(fwidth(el),1e-5));
     col = mix(col, vec3(1.,1.,0.), hor);
   }
+  if (uSpace == 1) col = 1. - exp(-col * 1.15);     // gentle roll-off for the brightest stars
   o = vec4(col, 1.);
 }`;
 
@@ -398,10 +488,11 @@ void main(){
     base = mix(base, vec3(.9,.2,.15), ax * step(vW.z, 0.));
   }
   float diff = max(dot(n, uSun), 0.);
-  vec3 amb = mix(vec3(.22,.2,.18), vec3(.42,.52,.68), n.y * .5 + .5);
+  vec3 amb = uSpace == 1 ? vec3(.11,.115,.14) + vec3(.05,.04,.03) * (n.y * .5 + .5)    // space: only faint starlight
+                         : mix(vec3(.22,.2,.18), vec3(.42,.52,.68), n.y * .5 + .5);
   vec3 col = base * (amb + diff * vec3(1., .94, .82) * 1.1);
   float dist = length(vW - uEye);
-  col = mix(col, SKY_HOR, 1. - exp(-dist * .006));
+  if (uSpace == 0) col = mix(col, SKY_HOR, 1. - exp(-dist * .006));
   o = vec4(col, 1.);
 }`;
 
@@ -547,7 +638,7 @@ const SUN = norm([0.35, 0.8, 0.45]);
 
 // ---------- state & UI ----------
 const $ = id => document.getElementById(id);
-const ui = ['mode','pipe','msaaN','lens','fov','tilt','pfov','grid','cubeRes','anim','calib','exportRes'].reduce((o,k)=>(o[k]=$(k),o),{});
+const ui = ['sky','ground','mode','pipe','msaaN','lens','fov','tilt','pfov','grid','cubeRes','anim','calib','exportRes'].reduce((o,k)=>(o[k]=$(k),o),{});
 const DEFAULT_RIG = { pos: [0, 1.7, 0], yaw: 0, pitch: 0 };
 const rig = structuredClone(DEFAULT_RIG);
 let time = 0;
@@ -563,6 +654,8 @@ ui.mode.addEventListener('change', layoutHud);
 $('reset').onclick = () => Object.assign(rig, structuredClone(DEFAULT_RIG));
 $('export').onclick = exportPNG;
 $('validate').onclick = () => validate();
+// (the ground comes with the day sky; in space it is off unless asked for)
+ui.sky.addEventListener('change', () => { ui.ground.checked = ui.sky.value === 'day'; });
 { const qs = new URLSearchParams(location.search); if (qs.get('pipe')) ui.pipe.value = qs.get('pipe'); }
 const app = $('app');
 function setCollapsed(c) { app.classList.toggle('collapsed', c); try { localStorage.setItem('dtw.collapsed', c ? '1' : '0'); } catch {} }
@@ -660,6 +753,7 @@ function drawSky(invVP, W = null) {
   gl.uniform3fv(skyProg.u.uSun, SUN);
   gl.uniform1f(skyProg.u.uTime, time);
   gl.uniform1i(skyProg.u.uCalib, ui.calib.checked ? 1 : 0);
+  gl.uniform1i(skyProg.u.uSpace, ui.sky.value === 'space' ? 1 : 0);
   gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 function drawObjects(vp, W = null) {
@@ -671,7 +765,9 @@ function drawObjects(vp, W = null) {
   else gl.uniformMatrix4fv(objProg.u.uVP, false, vp);
   gl.uniform3fv(objProg.u.uSun, SUN);
   gl.uniform3fv(objProg.u.uEye, rig.pos);
+  gl.uniform1i(objProg.u.uSpace, ui.sky.value === 'space' ? 1 : 0);
   for (const o of objects) {
+    if (o.ground && !ui.ground.checked) continue;
     gl.uniformMatrix4fv(objProg.u.uModel, false, o.m(time));
     gl.uniform3fv(objProg.u.uColor, o.color);
     gl.uniform1i(objProg.u.uGround, o.ground || 0);

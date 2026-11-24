@@ -34,6 +34,9 @@ F = dome centre direction, U = image-up (dome back), R = right
 2. Equirectangular 360°: a debug view
 3. Perspective preview: a normal camera, sampled from the same cubemap
 
+### Sky
+**Deep space** (default): stars all round and the Milky Way, all procedural (no textures). There are 4 layers of stars on a 3D grid, with temperature colours and few bright ones. The band is brighter and warmer toward its bulge, with star clouds, dark dust lanes and filaments, and a few red hydrogen clouds plus one blue reflection nebula. The sun is a hard disc with no atmosphere, and objects get only faint ambient light and no haze. Inspired by a wide-field photo of the galactic centre, not copied from it. **Day sky** brings back the blue sky, clouds and ground. The ground plane can be toggled separately.
+
 ### Verification aids
 - Dome grid overlay: rings every 10° from the zenith, spokes every 30°, and the horizon ring in red.
 - Calibration sky: azimuth and elevation lines every 15°, the front meridian in red, and the horizon in yellow.
