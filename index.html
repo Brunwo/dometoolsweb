@@ -58,7 +58,7 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
   <button id="toggle" title="Toggle settings (H)">☰</button>
   <aside id="panel">
     <h1>DomeTools Web</h1>
-    <div class="sub">Fulldome projection · cubemap or single-view warp</div>
+    <div class="sub">Fulldome projection · one camera, one pass</div>
 
     <details open>
       <summary><h2>Output</h2></summary>
@@ -71,8 +71,9 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
       <label class="row sel"><span>Pipeline</span>
         <select id="pipe">
           <option value="single" selected>Single camera (1 pass)</option>
-          <option value="cube">Cubemap (up to 6 views)</option>
+          <option value="cube">Cubemap (old, for comparison)</option>
         </select></label>
+      <div class="help" id="pipeHelp">One camera, one pass: every vertex is projected straight into the chosen view (dome, 360° or perspective) and the sky is computed per pixel. No cubemap.</div>
       <label class="row sel"><span>Single MSAA</span>
         <select id="msaaN"><option value="4" selected>4×</option><option value="2">2×</option><option value="0">Off</option></select></label>
       <label class="row sel"><span>Lens model</span>
@@ -88,14 +89,13 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
       <label class="chk"><input id="grid" type="checkbox"> Dome grid overlay (10° rings, 30° spokes)</label>
     </details>
 
-    <details open>
-      <summary><h2>Cubemap capture</h2></summary>
+    <details open id="cubeSec" style="display:none">
+      <summary><h2>Cubemap (reference)</h2></summary>
       <label class="row sel"><span>Face size</span>
         <select id="cubeRes">
           <option value="auto" selected>Auto (match output)</option><option>512</option><option>1024</option><option>2048</option><option>4096</option>
         </select></label>
-      <div class="help">Cubemap pipeline: the faces the dome can see (5 of 6 at 180°; all 6 for the 360° and perspective views) are rendered from the rig position, then sampled once per output pixel. Auto matches cube texel density to output pixel density (×1.25).<br>
-      Single-view pipeline: every vertex is projected straight into the fisheye in the vertex shader, so the scene is drawn once, at output resolution, with 4× MSAA. The 360° and perspective views are drawn the same way, in one pass with one camera. Best up to ~220° dome FOV.</div>
+      <div class="help">The old method, kept for comparison: up to 6 views (90° cube faces) are rendered, then resampled into the output. Slower and slightly softer. Auto sizes the faces to the output resolution.</div>
     </details>
 
     <details open>
@@ -111,7 +111,7 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
 
     <details open>
       <summary><h2>Validate</h2></summary>
-      <button id="validate">Compare single-view vs cubemap</button>
+      <button id="validate">Compare with the old cubemap method</button>
       <div id="valOut" class="help" style="margin-top:6px"></div>
       <canvas id="valImg" width="768" height="256" style="width:100%;display:none;margin-top:6px;border-radius:4px"></canvas>
       <div id="valCap" class="help" style="display:none">cubemap · single view · |difference| ×4</div>
@@ -882,6 +882,9 @@ $('tde').onclick = (e) => { tdeToggle(); e.currentTarget.blur(); };
 // (the ground comes with the day sky; in space it is off unless asked for)
 ui.sky.addEventListener('change', () => { ui.ground.checked = ui.sky.value === 'day'; });
 { const qs = new URLSearchParams(location.search); if (qs.get('pipe')) ui.pipe.value = qs.get('pipe'); }
+// (the cubemap settings are shown only when that method is chosen)
+function pipeUI() { const c = ui.pipe.value === 'cube'; $('cubeSec').style.display = c ? '' : 'none'; $('pipeHelp').style.display = c ? 'none' : ''; }
+ui.pipe.addEventListener('change', pipeUI); pipeUI();
 const app = $('app');
 function setCollapsed(c) { app.classList.toggle('collapsed', c); try { localStorage.setItem('dtw.collapsed', c ? '1' : '0'); } catch {} }
 $('toggle').onclick = () => setCollapsed(!app.classList.contains('collapsed'));
@@ -909,7 +912,7 @@ addEventListener('keydown', e => {
   if (e.code === 'Digit2') ui.mode.value = 1, layoutHud();
   if (e.code === 'Digit3') ui.mode.value = 2, layoutHud();
   if (e.code === 'KeyG') ui.grid.checked = !ui.grid.checked;
-  if (e.code === 'KeyP') ui.pipe.value = ui.pipe.value === 'single' ? 'cube' : 'single';
+  if (e.code === 'KeyP') { ui.pipe.value = ui.pipe.value === 'single' ? 'cube' : 'single'; pipeUI(); }
   if (e.code === 'KeyH') $('toggle').click();
   if (e.code === 'KeyT' && !e.repeat) tdeToggle();
   if (e.code === 'Space') e.preventDefault();
