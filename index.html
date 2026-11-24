@@ -878,6 +878,12 @@ ui.mode.addEventListener('change', layoutHud);
 $('reset').onclick = () => Object.assign(rig, structuredClone(DEFAULT_RIG));
 $('export').onclick = exportPNG;
 $('validate').onclick = () => validate();
+// MSAA levels: only those this graphics card offers (Off, then e.g. 2×, 4×, 8×), 4× by default if there
+{
+  const ok = [...gl.getInternalformatParameter(gl.RENDERBUFFER, gl.RGBA8, gl.SAMPLES)].filter((n) => n <= 8).sort((a, b) => a - b);
+  ui.msaaN.innerHTML = '<option value="0">Off</option>' + ok.map((n) => `<option value="${n}">${n}×</option>`).join('');
+  ui.msaaN.value = ok.includes(4) ? '4' : String(ok.at(-1) ?? 0);
+}
 $('tde').onclick = (e) => { tdeToggle(); e.currentTarget.blur(); };
 // (the ground comes with the day sky; in space it is off unless asked for)
 ui.sky.addEventListener('change', () => { ui.ground.checked = ui.sky.value === 'day'; });
@@ -1044,7 +1050,7 @@ function renderCube(F = null) {
 let msaa = null;
 function ensureMsaa(s, hgt = s) {
   const want = Math.min(+ui.msaaN.value, gl.getParameter(gl.MAX_SAMPLES));
-  if (msaa && msaa.size === s && msaa.h === hgt && msaa.samples === want) return;
+  if (msaa && msaa.size === s && msaa.h === hgt && msaa.want === want) return;
   if (msaa) { gl.deleteFramebuffer(msaa.fbo); gl.deleteRenderbuffer(msaa.col); gl.deleteRenderbuffer(msaa.dep); gl.deleteFramebuffer(msaa.rfbo); gl.deleteRenderbuffer(msaa.rcol); }
   const samples = want;
   const col = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, col);
@@ -1060,7 +1066,10 @@ function ensureMsaa(s, hgt = s) {
   gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, s, hgt);
   const rfbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, rfbo);
   gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rcol);
-  msaa = { fbo, col, dep, rfbo, rcol, size: s, h: hgt, samples };
+  // (a driver may give more samples than asked, e.g. 4 for 2: what it really gave is what is shown)
+  gl.bindRenderbuffer(gl.RENDERBUFFER, col);
+  const got = gl.getRenderbufferParameter(gl.RENDERBUFFER, gl.RENDERBUFFER_SAMPLES);
+  msaa = { fbo, col, dep, rfbo, rcol, size: s, h: hgt, samples: got, want };
 }
 function renderSingle(fbo, w, h, full) {
   const [x, y, s] = domeViewport(w, h, full);
