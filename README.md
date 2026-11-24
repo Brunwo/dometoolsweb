@@ -40,6 +40,9 @@ F = dome centre direction, U = image-up (dome back), R = right
 ### Black hole
 A ray-traced Schwarzschild black hole (r_s = 2.5 m, 56 m away, 34° up in front), drawn in the sky shader, so both pipelines get it. Each pixel's ray is traced back through curved space with the exact photon equation a = −1.5 h² p / r⁵, with the weak-field bend added analytically outside 30 r_s. This gives the shadow, the photon ring, the far side of the disk lensed over and under the hole, and stars smeared round it. The accretion disk runs from ISCO (3 r_s) to 13 r_s, with thin-disk emissivity and Keplerian differential rotation (ω ∝ r^-3/2, so the gas winds into streaks). Doppler beaming and gravitational redshift (switchable) make the approaching side brighter and bluer. The spinning cubes and spheres are gone; the pillars and zenith sphere remain as optional reference markers.
 
+### Tidal disruption (a star torn apart), on demand
+A star orbits the hole at 11 r_s. **Pull the star in** (button in the Black hole section, or `T`) starts the disruption: the star is peeled into a stream of hot gas that winds ahead of it (inner gas runs faster) and spirals down into the disk. The disk brightens and twin jets light up along its axis while it feeds. Press again to stop: the star stays where it is, partly eaten, and the stream lets go and drains in. Press again to carry on. After about 28 s of feeding the star is gone, and the button brings a new one. The star, the stream (80 moving beads, culled by bounding spheres) and the jets are drawn inside the ray tracing, so they're lensed like everything else.
+
 ### Verification aids
 - Dome grid overlay: rings every 10° from the zenith, spokes every 30°, and the horizon ring in red.
 - Calibration sky: azimuth and elevation lines every 15°, the front meridian in red, and the horizon in yellow.

@@ -122,6 +122,8 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
       <label class="chk"><input id="bh" type="checkbox" checked> Show black hole (deep-space sky)</label>
       <label class="row"><span>Disk spin</span><input id="spin" type="range" min="0" max="3" step="0.05" value="1"><span class="v" id="spinV"></span></label>
       <label class="chk"><input id="dop" type="checkbox" checked> Doppler beaming &amp; redshift</label>
+      <button id="tde">▶ Pull the star in (T)</button>
+      <div id="tdeState" class="help" style="margin-top:4px">Star intact, orbiting.</div>
       <div class="help">Light is traced through curved space round a non-spinning black hole (r<sub>s</sub> = 2.5 m, 56 m away, 34° up in front): the shadow, the photon ring, and the far side of the disk bent over and under it. The disk turns like real orbiting gas, inner rings faster (ω ∝ r<sup>−3/2</sup>); the side coming toward you is brighter and bluer. Fly toward it with the arrows; tick <i>Animate</i> to see it turn.</div>
     </details>
 
@@ -431,6 +433,50 @@ vec3 spaceSky(vec3 d, float px){
 // Outside the sphere where rays are traced (30 r_s) the weak-field bend 2 r_s / b is added analytically, split at
 // entry and exit, so the sky has no seam where the tracing starts.
 uniform vec3 uEyeS; uniform vec4 uBH; uniform vec3 uBHN, uBHX; uniform int uBHOn; uniform float uSpin, uDop;
+// A star being torn apart (tidal disruption), in the disk's frame and r_s units, laid out each frame by the page:
+// the star (xyz, radius), the stream of gas peeled off it as glowing beads (xyz, heat), the beads' widths, eight
+// bounding spheres (one per ten beads) to skip what a ray passes far from, and the jets' strength.
+uniform vec4 uStar; uniform vec4 uBeads[80]; uniform float uBeadW[80]; uniform vec4 uChunk[8];
+uniform float uJet, uBoost, uTdeT;
+// light from the star, the stream and the jets along one step of a ray (a → b). A glow is added on the one step
+// whose closest approach lies inside it, so each pass of the ray is counted once whatever the step length.
+void extras(vec3 a, vec3 b, inout vec3 acc, inout float A){
+  vec3 ab = b - a; float L2 = max(dot(ab, ab), 1e-9), len = sqrt(L2);
+  if (uStar.w > .01) {
+    float tu = dot(uStar.xyz - a, ab) / L2, dm = length(a + ab * clamp(tu, 0., 1.) - uStar.xyz);
+    if (dm < uStar.w) {                                   // its face: white-hot, darker toward the rim
+      float mu = sqrt(max(1. - dm * dm / (uStar.w * uStar.w), 0.));
+      acc += (1. - A) * mix(vec3(1., .62, .25), vec3(1., .95, .82), mu) * (2.2 + 2.5 * mu); A = 1.; return;
+    }
+    if (tu > 0. && tu <= 1.) acc += (1. - A) * (vec3(1., .7, .35) * exp(-pow(dm / (uStar.w * 2.), 2.)) * 1.6
+                                              + vec3(1., .5, .2) * exp(-dm / (uStar.w * 2.5)) * .35);
+  }
+  for (int k = 0; k < 8; k++) {
+    vec4 c = uChunk[k];
+    if (c.w <= 0.) continue;
+    float tc = clamp(dot(c.xyz - a, ab) / L2, 0., 1.);
+    if (length(a + ab * tc - c.xyz) > c.w) continue;
+    for (int j = 0; j < 10; j++) {
+      int i = k * 10 + j;
+      vec4 bd = uBeads[i];
+      if (bd.w <= 0.) continue;
+      float tu = dot(bd.xyz - a, ab) / L2;
+      if (tu <= 0. || tu > 1.) continue;
+      float dm = length(a + ab * tu - bd.xyz), w = uBeadW[i];
+      vec3 bc = mix(vec3(1., .38, .1), vec3(1., .88, .62), clamp(bd.w - .4, 0., 1.));
+      acc += (1. - A) * bc * bd.w * exp(-dm * dm / (w * w)) * .7;
+    }
+  }
+  if (uJet > .01) {                                     // twin jets along the axis, while the hole is fed
+    vec3 q = (a + b) * .5; float h = abs(q.y), rho = length(q.xz), wd = .35 + .16 * h;
+    float dens = exp(-pow(rho / wd, 2.)) * smoothstep(1.2, 3.5, h) * smoothstep(29., 15., h);
+    if (dens > 1e-3) {
+      float n = fbm3(vec3(q.x * .45, q.y * .3 - sign(q.y) * uTdeT * 2.2, q.z * .45), 4);
+      float n2 = fbm3(vec3(q.x * 1.6, q.y * .9 - sign(q.y) * uTdeT * 4., q.z * 1.6), 3);
+      acc += (1. - A) * mix(vec3(.9, .28, .1), vec3(1., .6, .3), n2) * dens * (.1 + 1.8 * n * n * n2) * len * uJet * .2;
+    }
+  }
+}
 const float RIN = 3., ROUT = 13., RINF = 30.;
 vec3 bendRest(vec3 p, vec3 v){                     // add the bend still to come, for a straight path from p onward
   vec3 c = p - v * dot(p, v); float b = length(c);
@@ -460,7 +506,7 @@ void diskHit(vec3 q, vec3 v, inout vec3 acc, inout float A){
   float beta = inversesqrt(2. * (r - 1.)), gam = inversesqrt(1. - beta * beta);
   float g = sqrt(1. - 1. / r) / (gam * (1. - beta * dot(t, -v)));
   g = mix(1., g, uDop);
-  vec3 e = diskColor(pow(max(f, 0.), .25) * g * (.85 + .3 * n2)) * I * pow(g, 3.) * 3.2;
+  vec3 e = diskColor(pow(max(f, 0.), .25) * g * (.85 + .3 * n2)) * I * pow(g, 3.) * 3.2 * uBoost;
   float a = clamp(I * 1.25, 0., .96) * edge;
   acc += (1. - A) * e * (.4 + .6 * a); A += (1. - A) * a;
 }
@@ -492,6 +538,7 @@ vec3 traceHole(vec3 eyeW, vec3 dW, out vec3 acc, out float A){
     float rn = length(pn);
     vec3 a2 = -1.5 * h2 * pn / pow(max(rn, .5), 5.);
     vec3 vn = vh + a2 * dt * .5;
+    extras(p, pn, acc, A);
     if (p.y * pn.y < 0.) { float s = p.y / (p.y - pn.y); diskHit(mix(p, pn, s), normalize(mix(v, vn, s)), acc, A); }
     p = pn; v = vn;
     if (A > .99) return vec3(0.);
@@ -728,6 +775,72 @@ const BH = (() => {
   return { C, rs, N: n, X: norm(cross(n, v)) };
 })();
 
+// ---------- tidal disruption: a star torn apart by the hole, on demand ----------
+// One button (or T) starts it, the second press stops it where it is, and so on; once the star is gone the
+// button brings a new one. Laid out here in the disk's frame (r_s units) and drawn, lensed, by the sky shader.
+const TDE = { prog: 0, active: false, clock: 0, theta: 2.4, L: 0, u0: 0, feed: 0, jet: 0 };
+const TDE_N = 80, TDE_FLOW = 0.15, R0 = 11, INC = rad(16);
+const beadArr = new Float32Array(TDE_N * 4), beadW = new Float32Array(TDE_N), chunkArr = new Float32Array(32);
+function tdeStar() {
+  const r = R0 - 3.5 * TDE.prog, th = TDE.theta;
+  return { r, th, p: [r * Math.cos(th), r * Math.sin(th) * Math.sin(INC), r * Math.sin(th) * Math.cos(INC)] };
+}
+function tdeToggle() {
+  if (TDE.prog >= 1) { Object.assign(TDE, { prog: 0, active: false, L: 0, u0: 0 }); }   // a new star
+  else if (!TDE.active) { TDE.active = true; TDE.u0 = 0; }
+  else TDE.active = false;
+  tdeLabel();
+}
+function tdeLabel() {
+  const b = $('tde'), st = $('tdeState'), pc = Math.round(TDE.prog * 100);
+  if (TDE.prog >= 1) { b.textContent = '↺ New star (T)'; st.textContent = 'The star is gone: swallowed.'; }
+  else if (TDE.active) { b.textContent = '⏸ Stop (T)'; st.textContent = `Being torn apart… ${pc}% swallowed`; }
+  else { b.textContent = '▶ Pull the star in (T)'; st.textContent = pc ? `Stopped: ${pc}% swallowed` : 'Star intact, orbiting.'; }
+}
+function tdeStep(dt) {
+  TDE.clock += dt;
+  const st = tdeStar();
+  TDE.theta += dt * 0.9 * (+ui.spin.value || 0) * Math.pow(3 / st.r, 1.5);
+  if (TDE.active) {
+    TDE.prog = Math.min(1, TDE.prog + dt * 0.035);
+    TDE.L = Math.min(1, TDE.L + dt * TDE_FLOW);
+    if (TDE.prog >= 1) { TDE.active = false; }
+    if (Math.floor(TDE.prog * 100) !== Math.floor((TDE.prog - dt * 0.035) * 100) || TDE.prog >= 1) tdeLabel();
+  } else {
+    TDE.u0 = Math.min(TDE.L, TDE.u0 + dt * TDE_FLOW);       // the stream lets go of the star and drains in
+    if (TDE.u0 >= TDE.L) TDE.L = TDE.u0 = 0;
+  }
+  const feeding = TDE.L > 0 && TDE.L > TDE.u0 + 0.02 && TDE.L >= 0.98;
+  TDE.feed += ((feeding ? 1 : 0) - TDE.feed) * Math.min(1, dt * 0.6);
+}
+function tdeLayout() {
+  const st = tdeStar(), rad0 = 1.2 * Math.sqrt(Math.max(0, 1 - TDE.prog));
+  const pos = (u) => {                                   // the stream: ahead of the star (inner gas runs faster), spiralling down into the disk
+    const r = st.r + (3.3 - st.r) * Math.pow(u, 0.75), a = st.th + u * 3.8;
+    const y = st.p[1] * Math.pow(1 - u, 1.5);
+    return [r * Math.cos(a), y, r * Math.sin(a) * Math.cos(INC * Math.pow(1 - u, 1.5))];
+  };
+  const phase = TDE.clock * TDE_FLOW * TDE_N, shift = Math.floor(phase), f = phase - shift;
+  for (let i = 0; i < TDE_N; i++) {
+    const u = (i + f) / TDE_N, id = i - shift, k = i * 4;
+    if (TDE.L <= 0 || u < TDE.u0 || u > TDE.L) { beadArr[k + 3] = 0; beadW[i] = 0.01; continue; }
+    const p = pos(u);
+    beadArr[k] = p[0]; beadArr[k + 1] = p[1]; beadArr[k + 2] = p[2];
+    beadArr[k + 3] = (1.5 * Math.pow(1 - u, 0.6) + 0.45 * u) * (0.75 + 0.25 * Math.sin(id * 12.9898)) * Math.min(1, (TDE.L - u) * 12 + 0.25);
+    beadW[i] = (0.42 - 0.24 * u) * (0.85 + 0.3 * Math.sin(id * 7.31));
+  }
+  for (let c = 0; c < TDE_N / 10; c++) {
+    let n = 0, cx = 0, cy = 0, cz = 0;
+    for (let j = 0; j < 10; j++) { const k = (c * 10 + j) * 4; if (beadArr[k + 3] > 0) { cx += beadArr[k]; cy += beadArr[k + 1]; cz += beadArr[k + 2]; n++; } }
+    if (!n) { chunkArr[c * 4 + 3] = 0; continue; }
+    cx /= n; cy /= n; cz /= n;
+    let R = 0;
+    for (let j = 0; j < 10; j++) { const k = (c * 10 + j) * 4; if (beadArr[k + 3] > 0) R = Math.max(R, Math.hypot(beadArr[k] - cx, beadArr[k + 1] - cy, beadArr[k + 2] - cz) + 2.2 * beadW[c * 10 + j]); }
+    chunkArr.set([cx, cy, cz, R], c * 4);
+  }
+  return { star: [...st.p, rad0 > 0.03 ? rad0 : 0] };
+}
+
 // ---------- state & UI ----------
 const $ = id => document.getElementById(id);
 const ui = ['bh','spin','dop','markers','sky','ground','mode','pipe','msaaN','lens','fov','tilt','pfov','grid','cubeRes','anim','calib','exportRes'].reduce((o,k)=>(o[k]=$(k),o),{});
@@ -747,6 +860,7 @@ ui.mode.addEventListener('change', layoutHud);
 $('reset').onclick = () => Object.assign(rig, structuredClone(DEFAULT_RIG));
 $('export').onclick = exportPNG;
 $('validate').onclick = () => validate();
+$('tde').onclick = (e) => { tdeToggle(); e.currentTarget.blur(); };
 // (the ground comes with the day sky; in space it is off unless asked for)
 ui.sky.addEventListener('change', () => { ui.ground.checked = ui.sky.value === 'day'; });
 { const qs = new URLSearchParams(location.search); if (qs.get('pipe')) ui.pipe.value = qs.get('pipe'); }
@@ -779,6 +893,7 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyG') ui.grid.checked = !ui.grid.checked;
   if (e.code === 'KeyP') ui.pipe.value = ui.pipe.value === 'single' ? 'cube' : 'single';
   if (e.code === 'KeyH') $('toggle').click();
+  if (e.code === 'KeyT' && !e.repeat) tdeToggle();
   if (e.code === 'Space') e.preventDefault();
 });
 addEventListener('keyup', e => keys.delete(e.code));
@@ -853,6 +968,14 @@ function drawSky(invVP, W = null) {
   gl.uniform3fv(skyProg.u.uBHN, BH.N); gl.uniform3fv(skyProg.u.uBHX, BH.X);
   gl.uniform1f(skyProg.u.uSpin, +ui.spin.value);
   gl.uniform1f(skyProg.u.uDop, ui.dop.checked ? 1 : 0);
+  const T = tdeLayout();
+  gl.uniform4fv(skyProg.u.uStar, T.star);
+  gl.uniform4fv(skyProg.u['uBeads[0]'], beadArr);
+  gl.uniform1fv(skyProg.u['uBeadW[0]'], beadW);
+  gl.uniform4fv(skyProg.u['uChunk[0]'], chunkArr);
+  gl.uniform1f(skyProg.u.uJet, TDE.feed);
+  gl.uniform1f(skyProg.u.uBoost, 1 + 0.7 * TDE.feed);
+  gl.uniform1f(skyProg.u.uTdeT, TDE.clock);
   gl.bindVertexArray(emptyVAO); gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 function drawObjects(vp, W = null) {
@@ -1113,6 +1236,7 @@ let last = performance.now(), fpsAcc = 0, fpsN = 0, fps = 0;
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000); last = now;
   if (ui.anim.checked) time += dt;
+  tdeStep(dt);
   move(dt);
   let what;
   if (singleOn()) {
