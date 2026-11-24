@@ -70,7 +70,7 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
         </select></label>
       <label class="row sel"><span>Pipeline</span>
         <select id="pipe">
-          <option value="single" selected>Single-view warp (1 pass)</option>
+          <option value="single" selected>Single camera (1 pass)</option>
           <option value="cube">Cubemap (up to 6 views)</option>
         </select></label>
       <label class="row sel"><span>Single MSAA</span>
@@ -95,7 +95,7 @@ kbd{background:#1a1d24;border:1px solid var(--line);border-radius:3px;padding:0 
           <option value="auto" selected>Auto (match output)</option><option>512</option><option>1024</option><option>2048</option><option>4096</option>
         </select></label>
       <div class="help">Cubemap pipeline: the faces the dome can see (5 of 6 at 180°; all 6 for the 360° and perspective views) are rendered from the rig position, then sampled once per output pixel. Auto matches cube texel density to output pixel density (×1.25).<br>
-      Single-view pipeline: every vertex is projected straight into the fisheye in the vertex shader, so the scene is drawn once, at output resolution, with 4× MSAA. Dome master only; the other views use the cubemap. Best up to ~220° FOV.</div>
+      Single-view pipeline: every vertex is projected straight into the fisheye in the vertex shader, so the scene is drawn once, at output resolution, with 4× MSAA. The 360° and perspective views are drawn the same way, in one pass with one camera. Best up to ~220° dome FOV.</div>
     </details>
 
     <details open>
@@ -552,7 +552,10 @@ float gridLine(float x){ float w = fwidth(x); return 1. - smoothstep(0., 1.2, ab
 void main(){
   vec3 d;
   if (uWarp == 1) d = normalize(domeDir(vUv*2.-1.));     // single view: the pixel's own dome direction
-  else { vec4 h = uInvVP * vec4(vUv*2.-1., 1., 1.); d = normalize(h.xyz / h.w); }
+  else if (uWarp == 2) {                                  // single view, equirectangular: longitude / latitude
+    vec2 q = vUv * 2. - 1.; float lon = q.x * 3.14159265, lat = q.y * 1.5707963;
+    d = cos(lat) * (sin(lon) * uDR + cos(lon) * uDF) + sin(lat) * uDU;
+  } else { vec4 h = uInvVP * vec4(vUv*2.-1., 1., 1.); d = normalize(h.xyz / h.w); }
   vec3 col;
   if (uSpace == 1) {
     float px = max(length(fwidth(d)), 1e-5);
@@ -596,10 +599,18 @@ layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNrm;
 uniform mat4 uVP, uModel;
 uniform int uWarp; uniform vec3 uEyeV; uniform vec2 uClip;   // single view: eye, (near, far)
 ${LENS}
-out vec3 vN; out vec3 vW;
+out vec3 vN; out vec3 vW; out float vLon;
 void main(){
-  vec4 w = uModel * vec4(aPos, 1.); vW = w.xyz; vN = mat3(uModel) * aNrm;
+  vec4 w = uModel * vec4(aPos, 1.); vW = w.xyz; vN = mat3(uModel) * aNrm; vLon = 0.;
   if (uWarp == 0) { gl_Position = uVP * w; return; }
+  if (uWarp == 2) {
+    // single-view equirectangular: longitude round the heading, latitude from the horizon
+    vec3 v = w.xyz - uEyeV; float len = length(v); vec3 d = v / max(len, 1e-6);
+    float lon = atan(dot(d, uDR), dot(d, uDF)), lat = asin(clamp(dot(d, uDU), -1., 1.));
+    vLon = lon;
+    gl_Position = vec4(lon / 3.14159265, lat / 1.5707963, (len - uClip.x) / (uClip.y - uClip.x) * 2. - 1., 1.);
+    return;
+  }
   // Single-view dome warp: the vertex goes straight to where the lens puts its direction.
   vec3 v = w.xyz - uEyeV; float len = length(v); vec3 d = v / max(len, 1e-6);
   float th = acos(clamp(dot(d, uDF), -1., 1.));
@@ -615,10 +626,17 @@ void main(){
 const OBJ_FS = `#version 300 es
 precision highp float;
 ${COMMON}
-in vec3 vN; in vec3 vW; out vec4 o;
-uniform vec3 uColor, uEye; uniform int uGround;
+in vec3 vN; in vec3 vW; in float vLon; out vec4 o;
+uniform vec3 uColor, uEye; uniform int uGround; uniform highp int uWarp; uniform vec3 uDF, uDR;
 float gridLine(float x, float t){ float w = fwidth(x); return 1. - smoothstep(0., t, abs(fract(x-.5)-.5)/max(w,1e-5)); }
 void main(){
+  // (equirectangular: a triangle straddling the seam behind would be smeared across the whole picture)
+  // Such a triangle is drawn the wrong way round the picture; its points then lie far from where the picture
+  // says they should be, which is how it is found: the true longitude of this point against the drawn one.
+  if (uWarp == 2) {
+    vec3 dv = vW - uEye; float lon = atan(dot(dv, uDR), dot(dv, uDF));
+    if (abs(mod(lon - vLon + 3.14159265, 6.2831853) - 3.14159265) > .35) discard;
+  }
   vec3 n = normalize(vN);
   vec3 base = uColor;
   if (uGround == 1) {
@@ -946,9 +964,9 @@ function move(dt) {
 const CUBE_PROJ = M.persp(Math.PI / 2, 1, 0.05, 2000);
 // Lens uniforms (shared by the sky, the objects and the mask). W = the dome's basis, or null for a plain camera.
 function setLens(pr, W) {
-  gl.uniform1i(pr.u.uWarp, W ? 1 : 0);
+  gl.uniform1i(pr.u.uWarp, W ? (W.mode || 1) : 0);
   if (!W) return;
-  gl.uniform1i(pr.u.uLens, +ui.lens.value);
+  if (pr.u.uLens) gl.uniform1i(pr.u.uLens, +ui.lens.value);
   gl.uniform1f(pr.u.uFov, rad(+ui.fov.value));
   gl.uniform3fv(pr.u.uDF, W.F); gl.uniform3fv(pr.u.uDU, W.U); gl.uniform3fv(pr.u.uDR, W.r);
 }
@@ -1021,25 +1039,25 @@ function renderCube(F = null) {
 // One pass straight into the fisheye: no cubemap, no resampling. Rendered into a multisampled buffer the size
 // of the circle, then blitted into place.
 let msaa = null;
-function ensureMsaa(s) {
+function ensureMsaa(s, hgt = s) {
   const want = Math.min(+ui.msaaN.value, gl.getParameter(gl.MAX_SAMPLES));
-  if (msaa && msaa.size === s && msaa.samples === want) return;
+  if (msaa && msaa.size === s && msaa.h === hgt && msaa.samples === want) return;
   if (msaa) { gl.deleteFramebuffer(msaa.fbo); gl.deleteRenderbuffer(msaa.col); gl.deleteRenderbuffer(msaa.dep); gl.deleteFramebuffer(msaa.rfbo); gl.deleteRenderbuffer(msaa.rcol); }
   const samples = want;
   const col = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, col);
-  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA8, s, s);
+  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.RGBA8, s, hgt);
   const dep = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, dep);
-  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT24, s, s);
+  gl.renderbufferStorageMultisample(gl.RENDERBUFFER, samples, gl.DEPTH_COMPONENT24, s, hgt);
   const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
   gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, col);
   gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, dep);
   // (a multisampled buffer can only be resolved into one of the same format; the canvas has no alpha, so the
   // resolve goes through a plain RGBA8 buffer, which can then be copied anywhere)
   const rcol = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, rcol);
-  gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, s, s);
+  gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, s, hgt);
   const rfbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, rfbo);
   gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rcol);
-  msaa = { fbo, col, dep, rfbo, rcol, size: s, samples };
+  msaa = { fbo, col, dep, rfbo, rcol, size: s, h: hgt, samples };
 }
 function renderSingle(fbo, w, h, full) {
   const [x, y, s] = domeViewport(w, h, full);
@@ -1066,7 +1084,30 @@ function renderSingle(fbo, w, h, full) {
   gl.blitFramebuffer(0, 0, s, s, x, y, x + s, y + s, gl.COLOR_BUFFER_BIT, gl.NEAREST);
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
 }
-const singleOn = () => ui.pipe.value === 'single' && +ui.mode.value === 0;
+const singleOn = () => ui.pipe.value === 'single';
+// The equirectangular and perspective views, also in one pass with one camera (no cubemap).
+function renderOne(fbo, w, h) {
+  const mode = +ui.mode.value;
+  if (mode === 0) return renderSingle(fbo, w, h, false);
+  ensureMsaa(w, h);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, msaa.fbo);
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0, 0, 0, 1); gl.clearDepth(1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (mode === 1) {
+    const B = basis(0), W = { mode: 2, F: B.f, U: B.up, r: B.r };
+    drawSky(null, W);
+    drawObjects(null, W);
+  } else {
+    const B = basis(rig.pitch), P = M.persp(rad(+ui.pfov.value), w / h, 0.05, 2000);
+    drawSky(M.invert(M.mul(P, M.lookAt([0, 0, 0], B.F, B.U))));
+    drawObjects(M.mul(P, M.lookAt(rig.pos, add(rig.pos, B.F), B.U)));
+  }
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msaa.fbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, msaa.rfbo);
+  gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, msaa.rfbo); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, fbo);
+  gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+}
 function domeViewport(w, h, full) {
   const s = Math.floor(Math.min(w, h));
   return [Math.floor((w - s) / 2), Math.floor((h - s) / 2), s, s];
@@ -1240,8 +1281,8 @@ function frame(now) {
   move(dt);
   let what;
   if (singleOn()) {
-    renderSingle(null, canvas.width, canvas.height, false);
-    what = `single view ${msaa.size}²${msaa.samples ? ` ×${msaa.samples} MSAA` : ''}`;
+    renderOne(null, canvas.width, canvas.height);
+    what = `single view ${msaa.size}×${msaa.h}${msaa.samples ? ` ×${msaa.samples} MSAA` : ''}`;
   } else {
     ensureCube(cubeSizeFor(+ui.mode.value, canvas.width, canvas.height));
     const faces = renderCube(+ui.mode.value === 0 ? domeBasis().F : null);

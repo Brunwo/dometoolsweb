@@ -53,6 +53,9 @@ A star orbits the hole at 11 r_s. **Pull the star in** (button in the Black hole
 
 ## Two pipelines
 
+**Default: one camera for every view.** The dome master, the 360° equirectangular view and the perspective preview are all drawn in a single pass with one camera, without the cubemap. The 360° view projects each vertex to longitude/latitude, and triangles straddling the seam behind are found by comparing each fragment's true longitude with the drawn one, then dropped. The cubemap stays available as a reference (*Pipeline → Cubemap*, `P`), and the Validate button still compares the two.
+
+
 The page has two ways to make the dome master. Switch with **Pipeline** in the panel, the `P` key, or `?pipe=cube` / `?pipe=single`.
 
 | | Cubemap | Single-view warp (default) |
